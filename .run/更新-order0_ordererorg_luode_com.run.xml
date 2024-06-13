@@ -1,0 +1,15 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="更新-order0_ordererorg_luode_com" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="trusted-chain" />
+    <target name="13-peer" />
+    <working_directory value="$PROJECT_DIR$" />
+    <parameters value="channel update --file channel-artifacts/mychannel-compute-update.pb --channelID mychannel" />
+    <kind value="PACKAGE" />
+    <package value="github.com/hyperledger/fabric/cmd/peer" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/cmd/configtxgen/main.go" />
+    <output_directory value="$PROJECT_DIR$" />
+    <option name="run" value="false" />
+    <method v="2" />
+  </configuration>
+</component>

@@ -1,0 +1,42 @@
+# 排序节点
+OrdererOrgs:
+
+  - Name: orderer     #  定义Orderer组织结构
+    Domain: orderer.dns.com   #  组织的命名域
+    EnableNodeOUs: true   # 如果设置了EnableNodeOUs，就在msp下生成config.yaml文件
+
+    #    Specs 规范条目。每个规范条目由两个字段组成：Hostname 和 CommonName
+    #    Hostname 表示组织中节点的主机名称。CommonName 是一个可选参数，可以通过重写来指定节点的名称。如果不指定 CommonName，则其节点默认的名称为{{.Hostname}}.{{.Domain}}
+    Specs:
+      # 表示组织中节点的主机名称
+      - Hostname: orderer0
+      - Hostname: orderer1
+      - Hostname: orderer2
+
+# 对等节点
+PeerOrgs:
+
+  # 。Template 下的 Count 指的是该组织下组织节点的个数.Users 指的是该组织中除了 Admin 之外的用户的个数。
+  - Name: org1
+    # 域名
+    Domain: org1.dns.com      # peer0.org1.xinhe.com
+    # true 表示在msp目录下生成config.yaml文件
+    EnableNodeOUs: true
+    Template:
+      # 组织下peer节点个数
+      Count: 2
+    #  表示生成几个 普通User
+    Users:
+      Count: 1
+
+  - Name: org2
+    # 域名
+    Domain: org2.dns.com      # peer0.org1.xinhe.com
+    # true 表示在msp目录下生成config.yaml文件
+    EnableNodeOUs: true
+    Template:
+      # 组织下peer节点个数
+      Count: 2
+    #  表示生成几个 普通User
+    Users:
+      Count: 1

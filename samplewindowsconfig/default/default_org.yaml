@@ -1,0 +1,21 @@
+Replace:
+    Organizations:
+        -   Name: OrgMSP
+            ID: OrgMSP
+            MSPDir: ./crypto-config/peerOrganizations/org.peer.com/msp
+            Policies:
+                Readers:
+                    Type: Signature
+                    Rule: "OR('OrgMSP.member')"
+                Writers:
+                    Type: Signature
+                    Rule: "OR('OrgMSP.member')"
+                Admins:
+                    Type: Signature
+                    Rule: "OR('OrgMSP.admin')"
+                Endorsement:
+                    Type: Signature
+                    Rule: "OR('OrgMSP.peer')"
+            AnchorPeers:
+                -   Host: peer0.org.peer.com  # 锚节点的host地址
+                    Port: 7150        # 锚节点开放的端口号

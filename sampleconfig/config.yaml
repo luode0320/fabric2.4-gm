@@ -1,0 +1,50 @@
+# 排序节点
+OrdererOrgs:
+  - MspID: OrdererMSP #  组织MspID
+    Domain: dns.com #  组织的命名域
+    Specs:
+      # 表示组织中节点的 主机名称,主端口,内部grpc端口,外部grpc端口
+      - Host: orderer0
+        port1: 7051
+        port2: 8443
+        port3: 9443
+
+      - Host: orderer1
+        port1: 7052
+        port2: 8444
+        port3: 9444
+
+      - Host: orderer2
+        port1: 7053
+        port2: 8445
+        port3: 9445
+
+# 对等节点
+PeerOrgs:
+  - MspID: Org1MSP #  组织MspID
+    Domain: org1.dns.com  # 域名
+    Specs:
+      # 表示组织中节点的 主机名称,主端口,内部grpc端口,外部grpc端口
+      - Host: peer0
+        port1: 7150
+        port2: 7250
+        port3: 7350
+
+      - Host: peer1
+        port1: 7151
+        port2: 7251
+        port3: 7351
+
+  - MspID: Org2MSP #  组织MspID
+    Domain: org2.dns.com  # 域名
+    Specs:
+      # 表示组织中节点的 主机名称,主端口,内部grpc端口,外部grpc端口
+      - Host: peer0
+        port1: 7152
+        port2: 7252
+        port3: 7352
+
+      - Host: peer1
+        port1: 7153
+        port2: 7253
+        port3: 7353

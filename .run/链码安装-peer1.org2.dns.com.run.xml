@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="链码安装-peer1.org2.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="trusted-chain" />
+    <working_directory value="$PROJECT_DIR$" />
+    <parameters value="lifecycle chaincode install chaincode\chaincode.tar.gz" />
+    <kind value="PACKAGE" />
+    <package value="github.com/hyperledger/fabric/cmd/peer" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/cmd/peer/main.go" />
+    <output_directory value="$PROJECT_DIR$" />
+    <method v="2" />
+  </configuration>
+</component>

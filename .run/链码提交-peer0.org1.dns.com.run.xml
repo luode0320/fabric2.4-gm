@@ -1,0 +1,14 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="链码提交-peer0.org1.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="trusted-chain" />
+    <target name="@@@LOCAL@@@" />
+    <working_directory value="$PROJECT_DIR$" />
+    <parameters value="lifecycle chaincode commit --channelID=mychannel --name=mycc --version=1.0 --sequence=1 --init-required=true" />
+    <kind value="PACKAGE" />
+    <package value="github.com/hyperledger/fabric/cmd/peer" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/cmd/peer/main.go" />
+    <output_directory value="$PROJECT_DIR$" />
+    <method v="2" />
+  </configuration>
+</component>

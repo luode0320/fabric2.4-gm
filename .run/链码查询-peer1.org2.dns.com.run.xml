@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="链码查询-peer1.org2.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="trusted-chain" />
+    <working_directory value="$PROJECT_DIR$" />
+    <parameters value="chaincode invoke --channelID=mychannel --name=mycc --ctor='{&quot;function&quot;:&quot;get&quot;,&quot;Args&quot;:[&quot;key&quot;]}'" />
+    <kind value="PACKAGE" />
+    <package value="github.com/hyperledger/fabric/cmd/peer" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/cmd/peer/main.go" />
+    <output_directory value="$PROJECT_DIR$" />
+    <method v="2" />
+  </configuration>
+</component>

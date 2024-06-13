@@ -1,0 +1,15 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="创建通道-configtxgen" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="trusted-chain" />
+    <target name="13-peer" />
+    <working_directory value="$PROJECT_DIR$" />
+    <parameters value="-profile OrgsChannel -outputCreateChannelTx channel-artifacts/mychannel.tx -channelID mychannel -outputBlock channel-artifacts/mychannel.block -inspectBlock channel-artifacts/mychannel.block" />
+    <kind value="PACKAGE" />
+    <package value="github.com/hyperledger/fabric/cmd/configtxgen" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/cmd/configtxgen/main.go" />
+    <output_directory value="$PROJECT_DIR$" />
+    <option name="run" value="false" />
+    <method v="2" />
+  </configuration>
+</component>

@@ -1,0 +1,32 @@
+ordererOrgs:
+  - domain: ordererorg.luode.com
+    mspId: ordererorg
+    specs:
+      - host: order0
+        port1: 11001
+        port2: 12001
+        port3: 13001
+      - host: order2
+        port1: 11003
+        port2: 12003
+        port3: 13003
+      - host: order1
+        port1: 11002
+        port2: 12002
+        port3: 13002
+peerOrgs:
+  - domain: org1.luode.com
+    mspId: org1
+    specs:
+      - host: peer0
+        port1: 11005
+        port2: 12005
+        port3: 13005
+  - domain: org0.luode.com
+    mspId: org0
+    specs:
+      - host: peer0
+        port1: 11004
+        port2: 12004
+        port3: 13004
+

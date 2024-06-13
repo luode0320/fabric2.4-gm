@@ -1,0 +1,11 @@
+orderer:
+  address: orderer0.orderer.com:9443
+  tls:
+    enabled: true
+    clientAuthRequired: true
+    rootcert:
+      file: crypto-config/ordererOrganizations/orderer.com/orderers/orderer0.orderer.com/tls/ca.crt
+    cert:
+      file: crypto-config/ordererOrganizations/orderer.com/orderers/orderer0.orderer.com/tls/server.crt
+    key:
+      file: crypto-config/ordererOrganizations/orderer.com/orderers/orderer0.orderer.com/tls/server.key
