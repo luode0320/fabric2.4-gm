@@ -89,35 +89,34 @@ type Consortium interface {
 	Organizations() map[string]Org
 }
 
-// Orderer stores the common shared orderer config
+// Orderer 存储了通用的、共享的排序服务配置信息。
 type Orderer interface {
-	// ConsensusType returns the configured consensus type
+	// ConsensusType 返回配置的共识类型。
 	ConsensusType() string
 
-	// ConsensusMetadata returns the metadata associated with the consensus type.
+	// ConsensusMetadata 返回与共识类型关联的元数据。
 	ConsensusMetadata() []byte
 
-	// ConsensusState returns the consensus-type state.
+	// ConsensusState 返回共识类型的当前状态。
 	ConsensusState() ab.ConsensusType_State
 
-	// BatchSize returns the maximum number of messages to include in a block
+	// BatchSize 返回一个区块中应包含的最大消息数量。
 	BatchSize() *ab.BatchSize
 
-	// BatchTimeout returns the amount of time to wait before creating a batch
+	// BatchTimeout 返回创建新区块前等待的最长时间。
 	BatchTimeout() time.Duration
 
-	// MaxChannelsCount returns the maximum count of channels to allow for an ordering network
+	// MaxChannelsCount 返回允许在网络中建立的通道最大数量。
 	MaxChannelsCount() uint64
 
-	// KafkaBrokers returns the addresses (IP:port notation) of a set of "bootstrap"
-	// Kafka brokers, i.e. this is not necessarily the entire set of Kafka brokers
-	// used for ordering
+	// KafkaBrokers 返回一组“引导”Kafka代理的地址（采用IP:端口格式）。
+	// 注意，这不一定包含所有用于排序服务的Kafka代理。
 	KafkaBrokers() []string
 
-	// Organizations returns the organizations for the ordering service
+	// Organizations 返回排序服务所涉及的组织信息。
 	Organizations() map[string]OrdererOrg
 
-	// Capabilities defines the capabilities for the orderer portion of a channel
+	// Capabilities 定义了通道中与排序服务相关的功能集。
 	Capabilities() OrdererCapabilities
 }
 

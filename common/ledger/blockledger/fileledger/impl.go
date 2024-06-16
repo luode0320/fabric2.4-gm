@@ -22,13 +22,22 @@ type FileLedger struct {
 	signal     chan struct{}
 }
 
-// FileLedgerBlockStore defines the interface to interact with deliver when using a
-// file ledger
+// FileLedgerBlockStore 定义了当使用文件账本时，与deliver服务交互的接口规范。
 type FileLedgerBlockStore interface {
+	// AddBlock 用于向账本中添加一个新的区块。
 	AddBlock(block *cb.Block) error
+
+	// GetBlockchainInfo 获取区块链的当前信息，包括当前高度和最新区块的哈希。
 	GetBlockchainInfo() (*cb.BlockchainInfo, error)
+
+	// RetrieveBlocks 从指定的起始区块号开始，检索一系列区块。
+	// 返回一个迭代器用于遍历这些区块。
 	RetrieveBlocks(startBlockNumber uint64) (ledger.ResultsIterator, error)
+
+	// Shutdown 关闭BlockStore，释放相关资源。
 	Shutdown()
+
+	// RetrieveBlockByNumber 根据区块编号检索单个区块。
 	RetrieveBlockByNumber(blockNum uint64) (*cb.Block, error)
 }
 
@@ -101,12 +110,15 @@ func (fl *FileLedger) Iterator(startPosition *ab.SeekPosition) (blockledger.Iter
 	return &fileLedgerIterator{ledger: fl, blockNumber: startingBlockNumber, commonIterator: iterator}, startingBlockNumber
 }
 
-// Height returns the number of blocks on the ledger
+// Height 返回账本中的区块数量
 func (fl *FileLedger) Height() uint64 {
+	// 尝试从blockStore中获取区块链的信息
 	info, err := fl.blockStore.GetBlockchainInfo()
 	if err != nil {
+		// 如果获取过程中发生错误，则记录严重错误日志并终止程序运行
 		logger.Panic(err)
 	}
+	// 返回区块链的高度，即账本中的区块总数
 	return info.Height
 }
 

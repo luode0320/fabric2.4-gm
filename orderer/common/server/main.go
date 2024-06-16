@@ -812,6 +812,23 @@ type healthChecker interface {
 	RegisterChecker(component string, checker healthz.HealthChecker) error
 }
 
+// 负责初始化一个多通道注册器，用于管理不同类型的共识器和通道。
+// 参数:
+//   - bootstrapBlock: 启动区块，用于初始化系统通道。
+//   - repInitiator: 复制初始化器，用于etcd/raft共识协议的通道复制。
+//   - clusterDialer: 集群拨号器，用于建立与其他节点的连接。
+//   - srvConf: gRPC服务器配置。
+//   - srv: 已经初始化的gRPC服务器实例。
+//   - conf: 包含顶级配置信息的结构。
+//   - signer: 签名和序列化工具，用于生成和验证身份签名。
+//   - metricsProvider: 提供度量指标收集功能的对象。
+//   - healthChecker: 健康检查器，用于监控Kafka的健康状态。
+//   - lf: 区块账本工厂，用于访问和创建区块链账本。
+//   - bccsp: 加密服务提供者，用于密码学操作。
+//   - callbacks: 可选的回调函数列表，用于在Bundle变更时触发动作。
+//
+// 返回:
+//   - *multichannel.Registrar: 初始化后的多通道注册器实例，管理着不同共识类型的通道注册逻辑。
 func initializeMultichannelRegistrar(
 	bootstrapBlock *cb.Block,
 	repInitiator *onboarding.ReplicationInitiator,
@@ -826,30 +843,37 @@ func initializeMultichannelRegistrar(
 	bccsp bccsp.BCCSP,
 	callbacks ...channelconfig.BundleActor,
 ) *multichannel.Registrar {
-	// 新建一个Registrar 类型的实例
+	// 创建一个多通道注册器实例，配置基础参数
 	registrar := multichannel.NewRegistrar(*conf, lf, signer, metricsProvider, bccsp, clusterDialer, callbacks...)
 
+	// 初始化共识器映射，存储不同类型的共识器
 	consenters := map[string]consensus.Consenter{}
 
+	// 根据启动方式初始化共识器，支持etcdraft、solo、kafka等类型
 	var icr etcdraft.InactiveChainRegistry
 	if conf.General.BootstrapMethod == "file" || conf.General.BootstrapMethod == "none" {
+		// 如果使用文件或无引导方式，并且存在启动区块且是集群类型
 		if bootstrapBlock != nil && isClusterType(bootstrapBlock, bccsp) {
-			// 通过系统通道
+			// 初始化etcd/raft共识器，并获取InactiveChainRegistry
 			etcdConsenter := initializeEtcdraftConsenter(consenters, conf, lf, clusterDialer, bootstrapBlock, repInitiator, srvConf, srv, registrar, metricsProvider, bccsp)
 			icr = etcdConsenter.InactiveChainRegistry
 		} else if bootstrapBlock == nil {
-			// 没有系统通道:假设集群类型，InactiveChainRegistry == nil，没有go-routine。
+			// 如果启动区块不存在，直接初始化etcdraft共识器，不启动任何go-routine
 			consenters["etcdraft"] = etcdraft.New(clusterDialer, conf, srvConf, srv, registrar, nil, metricsProvider, bccsp)
 		}
 	}
 
+	// 添加solo共识器到映射中
 	consenters["solo"] = solo.New()
+
+	// 初始化kafka共识器，并获取其度量指标对象
 	var kafkaMetrics *kafka.Metrics
 	consenters["kafka"], kafkaMetrics = kafka.New(conf.Kafka, metricsProvider, healthChecker, icr, registrar.CreateChain)
 
-	//注意，我们在这里传递了一个'nil'通道，我们可以传递一个
-	//如果我们希望在退出时清除这个例程，将关闭。
+	// 启动一个goroutine周期性地收集并报告kafka相关的度量指标，直到收到停止信号
 	go kafkaMetrics.PollGoMetricsUntilStop(time.Minute, nil)
+
+	// 最后，使用初始化好的共识器映射完成注册器的初始化
 	registrar.Initialize(consenters)
 	return registrar
 }

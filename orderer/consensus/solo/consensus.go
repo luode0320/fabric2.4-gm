@@ -54,7 +54,7 @@ func newChain(support consensus.ConsenterSupport) *chain {
 	}
 }
 
-// Start 启动链的主循环处理过程。
+// Start 启动共识的主循环处理过程。
 func (ch *chain) Start() {
 	go ch.main() // 在新goroutine中运行链的主循环
 }

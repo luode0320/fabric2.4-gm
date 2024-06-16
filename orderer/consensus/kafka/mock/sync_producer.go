@@ -100,22 +100,38 @@ func (fake *SyncProducer) CloseReturnsOnCall(i int, result1 error) {
 	}{result1}
 }
 
+// SendMessage 方法模拟同步生产者发送单条消息至Kafka的行为。
 func (fake *SyncProducer) SendMessage(arg1 *sarama.ProducerMessage) (int32, int64, error) {
+	// 加锁以保护并发访问sendMessage相关数据
 	fake.sendMessageMutex.Lock()
+
+	// 获取预设的返回值（如果有）
 	ret, specificReturn := fake.sendMessageReturnsOnCall[len(fake.sendMessageArgsForCall)]
+
+	// 记录此次调用的参数
 	fake.sendMessageArgsForCall = append(fake.sendMessageArgsForCall, struct {
 		arg1 *sarama.ProducerMessage
 	}{arg1})
+
+	// 记录方法调用，便于跟踪模拟调用历史
 	fake.recordInvocation("SendMessage", []interface{}{arg1})
+
+	// 解锁
 	fake.sendMessageMutex.Unlock()
+
+	// 如果存在Stub（模拟函数），则直接调用该Stub
 	if fake.SendMessageStub != nil {
 		return fake.SendMessageStub(arg1)
 	}
+
+	// 根据specificReturn决定返回预设值还是默认返回值
 	if specificReturn {
+		// 返回预设的分区号、偏移量及错误信息
 		return ret.result1, ret.result2, ret.result3
 	}
-	fakeReturns := fake.sendMessageReturns
-	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+
+	// 返回默认设定的返回值
+	return fake.sendMessageReturns.result1, fake.sendMessageReturns.result2, fake.sendMessageReturns.result3
 }
 
 func (fake *SyncProducer) SendMessageCallCount() int {
@@ -166,27 +182,44 @@ func (fake *SyncProducer) SendMessageReturnsOnCall(i int, result1 int32, result2
 	}{result1, result2, result3}
 }
 
+// SendMessages 方法模拟同步生产者发送一组消息至Kafka的行为。
 func (fake *SyncProducer) SendMessages(arg1 []*sarama.ProducerMessage) error {
+	// 创建arg1的副本以避免外部数据被意外修改
 	var arg1Copy []*sarama.ProducerMessage
 	if arg1 != nil {
 		arg1Copy = make([]*sarama.ProducerMessage, len(arg1))
 		copy(arg1Copy, arg1)
 	}
+
+	// 加锁以保护并发访问sendMessages相关数据
 	fake.sendMessagesMutex.Lock()
+
+	// 获取预设的返回值（如果有）
 	ret, specificReturn := fake.sendMessagesReturnsOnCall[len(fake.sendMessagesArgsForCall)]
+
+	// 记录此次调用的参数
 	fake.sendMessagesArgsForCall = append(fake.sendMessagesArgsForCall, struct {
 		arg1 []*sarama.ProducerMessage
 	}{arg1Copy})
+
+	// 记录方法调用，便于跟踪模拟调用历史
 	fake.recordInvocation("SendMessages", []interface{}{arg1Copy})
+
+	// 解锁
 	fake.sendMessagesMutex.Unlock()
+
+	// 如果存在Stub（模拟函数），则直接调用该Stub
 	if fake.SendMessagesStub != nil {
 		return fake.SendMessagesStub(arg1)
 	}
+
+	// 根据specificReturn决定返回预设值还是默认返回值
 	if specificReturn {
 		return ret.result1
 	}
-	fakeReturns := fake.sendMessagesReturns
-	return fakeReturns.result1
+
+	// 返回默认设定的返回值
+	return fake.sendMessagesReturns.result1
 }
 
 func (fake *SyncProducer) SendMessagesCallCount() int {
@@ -247,14 +280,22 @@ func (fake *SyncProducer) Invocations() map[string][][]interface{} {
 	return copiedInvocations
 }
 
+// recordInvocation 方法用于记录模拟对象方法的调用信息。
 func (fake *SyncProducer) recordInvocation(key string, args []interface{}) {
+	// 加锁以确保并发安全
 	fake.invocationsMutex.Lock()
 	defer fake.invocationsMutex.Unlock()
+
+	// 如果invocations映射尚未初始化，则创建一个空映射
 	if fake.invocations == nil {
 		fake.invocations = map[string][][]interface{}{}
 	}
+
+	// 确保对应方法名的调用记录切片存在
 	if fake.invocations[key] == nil {
 		fake.invocations[key] = [][]interface{}{}
 	}
+
+	// 将本次调用的参数追加到相应方法名的记录中
 	fake.invocations[key] = append(fake.invocations[key], args)
 }

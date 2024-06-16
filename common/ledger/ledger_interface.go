@@ -20,18 +20,21 @@ import (
 	"github.com/hyperledger/fabric-protos-go/common"
 )
 
-// Ledger captures the methods that are common across the 'PeerLedger', 'OrdererLedger', and 'ValidatedLedger'
+// Ledger 接口捕获了“PeerLedger”、“OrdererLedger”和“ValidatedLedger”之间共有的方法，
+// 这些方法用于访问和操作区块链账本的关键信息。
 type Ledger interface {
-	// GetBlockchainInfo returns basic info about blockchain
+	// GetBlockchainInfo 返回关于区块链的基本信息，如当前高度和当前哈希。
 	GetBlockchainInfo() (*common.BlockchainInfo, error)
-	// GetBlockByNumber returns block at a given height
-	// blockNumber of  math.MaxUint64 will return last block
+
+	// GetBlockByNumber 根据给定的高度返回区块。如果blockNumber为math.MaxUint64，则返回最后一个区块。
 	GetBlockByNumber(blockNumber uint64) (*common.Block, error)
-	// GetBlocksIterator returns an iterator that starts from `startBlockNumber`(inclusive).
-	// The iterator is a blocking iterator i.e., it blocks till the next block gets available in the ledger
-	// ResultsIterator contains type BlockHolder
+
+	// GetBlocksIterator 从指定的起始区块号（包含）开始返回一个区块迭代器。
+	// 这是一个阻塞迭代器，意味着它会等待直到账本中有新的区块可用。
+	// ResultsIterator 中包含的数据类型为 BlockHolder。
 	GetBlocksIterator(startBlockNumber uint64) (ResultsIterator, error)
-	// Close closes the ledger
+
+	// Close 关闭账本，释放关联资源。
 	Close()
 }
 

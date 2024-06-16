@@ -41,25 +41,38 @@ type BlockWriter struct {
 	committingBlock    sync.Mutex
 }
 
+// 函数根据最后一个区块、注册器和区块写入支持者创建一个新的 BlockWriter 实例。
+// 参数:
+//   - lastBlock: 上一个区块的指针，用于初始化 BlockWriter。
+//   - r: 注册器实例，提供通道相关的注册功能。
+//   - support: blockWriterSupport 接口的实现，提供了区块写入所需的支持功能。
+//
+// 返回:
+//   - *BlockWriter: 初始化后的新 BlockWriter 实例。
 func newBlockWriter(lastBlock *cb.Block, r *Registrar, support blockWriterSupport) *BlockWriter {
+	// 初始化 BlockWriter 结构体实例
 	bw := &BlockWriter{
-		support:       support,
-		lastConfigSeq: support.Sequence(),
-		lastBlock:     lastBlock,
-		registrar:     r,
+		support:       support,            // 设置支持功能
+		lastConfigSeq: support.Sequence(), // 获取并设置最后配置序列号
+		lastBlock:     lastBlock,          // 记录最后一个区块
+		registrar:     r,                  // 设置注册器引用
 	}
 
-	// If this is the genesis block, the lastconfig field may be empty, and, the last config block is necessarily block 0
-	// so no need to initialize lastConfig
+	// 如果这不是创世区块（区块编号不为0）
 	if lastBlock.Header.Number != 0 {
+		// 尝试从区块元数据中提取最后配置块的信息
 		var err error
 		bw.lastConfigBlockNum, err = protoutil.GetLastConfigIndexFromBlock(lastBlock)
 		if err != nil {
-			logger.Panicf("[channel: %s] Error extracting last config block from block metadata: %s", support.ChannelID(), err)
+			// 提取失败时，记录错误并终止程序
+			logger.Panicf("[channel: %s] 从区块元数据中提取最后配置块时发生错误: %s", support.ChannelID(), err)
 		}
 	}
 
-	logger.Debugf("[channel: %s] Creating block writer for tip of chain (blockNumber=%d, lastConfigBlockNum=%d, lastConfigSeq=%d)", support.ChannelID(), lastBlock.Header.Number, bw.lastConfigBlockNum, bw.lastConfigSeq)
+	// 打印调试信息，包括通道ID、当前区块编号、最后配置块编号和最后配置序列号
+	logger.Debugf("[channel: %s] 为链的末端创建区块写入器 (blockNumber=%d, lastConfigBlockNum=%d, lastConfigSeq=%d)", support.ChannelID(), lastBlock.Header.Number, bw.lastConfigBlockNum, bw.lastConfigSeq)
+
+	// 完成初始化后返回 BlockWriter 实例
 	return bw
 }
 

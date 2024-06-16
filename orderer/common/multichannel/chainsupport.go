@@ -42,6 +42,18 @@ type ChainSupport struct {
 	consensus.StatusReporter
 }
 
+// newChainSupport 用于创建一个链共识对象（ChainSupport），它封装了用于处理特定通道所需的各种资源和服务。
+// 参数:
+//   - registrar: 订单服务注册器，包含配置和报告功能。
+//   - ledgerResources: 提供访问账本和配置验证器的资源。
+//   - consenters: 一个映射，键为共识类型，值为对应的共识器实例。
+//   - signer: 签名和序列化器，用于生成签名。
+//   - blockcutterMetrics: 用于跟踪blockcutter性能指标的对象。
+//   - bccsp: BCCSP（区块链加密服务提供者）实例，用于加密操作。
+//
+// 返回:
+//   - *ChainSupport: 新创建的链支持对象。
+//   - error: 如果创建过程中出现错误。
 func newChainSupport(
 	registrar *Registrar,
 	ledgerResources *ledgerResources,
@@ -50,16 +62,15 @@ func newChainSupport(
 	blockcutterMetrics *blockcutter.Metrics,
 	bccsp bccsp.BCCSP,
 ) (*ChainSupport, error) {
-	// Read in the last block and metadata for the channel
+	// 从账本中读取最新块和该通道的元数据
 	lastBlock := blockledger.GetBlock(ledgerResources, ledgerResources.Height()-1)
 	metadata, err := protoutil.GetConsenterMetadataFromBlock(lastBlock)
-	// Assuming a block created with cb.NewBlock(), this should not
-	// error even if the orderer metadata is an empty byte slice
+	// 即使元数据为空，也应该能正常处理，因为使用cb.NewBlock()创建的块
 	if err != nil {
-		return nil, errors.WithMessagef(err, "error extracting orderer metadata for channel: %s", ledgerResources.ConfigtxValidator().ChannelID())
+		return nil, errors.WithMessagef(err, "为通道[%s]提取排序器元数据时出错", ledgerResources.ConfigtxValidator().ChannelID())
 	}
 
-	// Construct limited support needed as a parameter for additional support
+	// 构建ChainSupport的基本结构
 	cs := &ChainSupport{
 		ledgerResources:  ledgerResources,
 		SignerSerializer: signer,
@@ -71,42 +82,45 @@ func newChainSupport(
 		BCCSP: bccsp,
 	}
 
-	// Set up the msgprocessor
+	// 设置消息处理器
 	cs.Processor = msgprocessor.NewStandardChannel(cs, msgprocessor.CreateStandardChannelFilters(cs, registrar.config), bccsp)
 
-	// Set up the block writer
+	// 初始化区块写入器
 	cs.BlockWriter = newBlockWriter(lastBlock, registrar, cs)
 
-	// Set up the consenter
+	// 获取并设置共识器
 	consenterType := ledgerResources.SharedConfig().ConsensusType()
 	consenter, ok := consenters[consenterType]
 	if !ok {
-		return nil, errors.Errorf("error retrieving consenter of type: %s", consenterType)
+		return nil, errors.Errorf("找不到类型为[%s]的共识器", consenterType)
 	}
 
 	cs.Chain, err = consenter.HandleChain(cs, metadata)
 	if err != nil {
-		return nil, errors.WithMessagef(err, "error creating consenter for channel: %s", cs.ChannelID())
+		return nil, errors.WithMessagef(err, "为通道[%s]创建共识器时出错", cs.ChannelID())
 	}
 
-	cs.MetadataValidator, ok = cs.Chain.(consensus.MetadataValidator)
-	if !ok {
+	// 设置元数据验证器和状态报告器
+	if cv, ok := cs.Chain.(consensus.MetadataValidator); ok {
+		cs.MetadataValidator = cv
+	} else {
 		cs.MetadataValidator = consensus.NoOpMetadataValidator{}
 	}
 
-	cs.StatusReporter, ok = cs.Chain.(consensus.StatusReporter)
-	if !ok { // Non-cluster types: solo, kafka
+	if sr, ok := cs.Chain.(consensus.StatusReporter); ok {
+		cs.StatusReporter = sr
+	} else { // 对于非集群类型，如solo或kafka
 		cs.StatusReporter = consensus.StaticStatusReporter{ConsensusRelation: types.ConsensusRelationOther, Status: types.StatusActive}
 	}
 
+	// 报告共识关系和状态指标
 	clusterRelation, status := cs.StatusReporter.StatusReport()
 	registrar.ReportConsensusRelationAndStatusMetrics(cs.ChannelID(), clusterRelation, status)
 
-	logger.Debugf("[channel: %s] Done creating channel support resources", cs.ChannelID())
+	logger.Debugf("[channel: %s] 成功创建链共识资源", cs.ChannelID())
 
 	return cs, nil
 }
-
 func (cs *ChainSupport) Reader() blockledger.Reader {
 	return cs
 }

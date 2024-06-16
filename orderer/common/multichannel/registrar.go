@@ -44,30 +44,44 @@ const (
 
 var logger = flogging.MustGetLogger("orderer.commmon.multichannel")
 
-// Registrar serves as a point of access and control for the individual channel resources.
+// Registrar 作为一个访问点和控制中心，管理各个通道资源。
 type Registrar struct {
+	// config 存储顶层配置信息
 	config localconfig.TopLevel
 
-	lock      sync.RWMutex
-	chains    map[string]*ChainSupport
+	// lock 用于保护内部字段的读写锁，确保并发安全
+	lock sync.RWMutex
+	// chains 存储由键（通道ID）索引的ChainSupport共识实例，每个实例对应一个通道的管理逻辑
+	chains map[string]*ChainSupport
+	// followers 类似chains，但用于管理跟随链（可能为系统链的备份或其他特殊用途）
 	followers map[string]*follower.Chain
-	// existence indicates removal is in-progress or failed
-	// when failed, the status will indicate failed all other states
-	// denote an in-progress removal
-	pendingRemoval  map[string]consensus.StaticStatusReporter
+	// pendingRemoval 记录正在进行移除操作或移除失败的通道，以及它们的状态报告者
+	pendingRemoval map[string]consensus.StaticStatusReporter
+	// systemChannelID 存储系统通道的ID，如果有的话
 	systemChannelID string
-	systemChannel   *ChainSupport
+	// systemChannel 是指向系统通道的ChainSupport实例
+	systemChannel *ChainSupport
 
-	consenters                  map[string]consensus.Consenter
-	ledgerFactory               blockledger.Factory
-	signer                      identity.SignerSerializer
-	blockcutterMetrics          *blockcutter.Metrics
-	templator                   msgprocessor.ChannelConfigTemplator
-	callbacks                   []channelconfig.BundleActor
-	bccsp                       bccsp.BCCSP
-	clusterDialer               *cluster.PredicateDialer
+	// consenters 保存不同类型共识算法的实例，键为共识算法的名称
+	consenters map[string]consensus.Consenter
+	// ledgerFactory 用于创建和访问区块链账本的工厂
+	ledgerFactory blockledger.Factory
+	// signer 用于签名和序列化的身份管理工具
+	signer identity.SignerSerializer
+	// blockcutterMetrics 区块裁剪模块的性能指标
+	blockcutterMetrics *blockcutter.Metrics
+	// templator 用于根据通道配置模板处理消息的组件
+	templator msgprocessor.ChannelConfigTemplator
+	// callbacks 在通道配置包更改时调用的回调函数列表
+	callbacks []channelconfig.BundleActor
+	// bccsp 加密服务提供者，用于密码学操作
+	bccsp bccsp.BCCSP
+	// clusterDialer 用于与集群中其他节点建立连接的拨号器
+	clusterDialer *cluster.PredicateDialer
+	// channelParticipationMetrics 记录通道参与度相关的性能指标
 	channelParticipationMetrics *Metrics
 
+	// joinBlockFileRepo 用于管理加入通道区块的文件存储仓库
 	joinBlockFileRepo *filerepo.Repo
 }
 
@@ -176,18 +190,22 @@ func (r *Registrar) init(consenters map[string]consensus.Consenter) {
 	}
 }
 
-// startChannels starts internal go-routines in chains and followers.
-// Since these go-routines may call-back on the Registrar, this must be protected with a lock.
+// startChannels 启动注册器中所有通道的内部goroutine，包括chains（主链）和followers（跟随链）的goroutine。
+// 因为这些goroutine可能回调到Registrar上，所以在执行此操作前需要加锁保护，以防止并发访问导致的数据竞争。
 func (r *Registrar) startChannels() {
+	// 遍历所有的主链支持对象，并启动每个链的内部goroutine
 	for _, chainSupport := range r.chains {
 		chainSupport.start()
 	}
+
+	// 遍历所有的跟随链，并启动每个跟随链的内部goroutine
 	for _, fChain := range r.followers {
 		fChain.Start()
 	}
 
+	// 如果没有设置系统通道ID，打印日志信息
 	if r.systemChannelID == "" {
-		logger.Infof("没有系统通道的注册器初始化, 应用程序通道数: %d, 具有 %d consensus.Chain(s) 和 %d follower.Chain(s)",
+		logger.Infof("注册器已初始化，未指定系统通道, 当前应用程序通道总数: %d, 其中包含 %d 个共识主链和 %d 个跟随链",
 			len(r.chains)+len(r.followers), len(r.chains), len(r.followers))
 	}
 }
@@ -559,49 +577,75 @@ func (r *Registrar) CreateChain(chainName string) {
 	r.newChain(configTx(lf))
 }
 
+// 方法用于根据配置交易创建一个新的通道。
+// 参数:
+//   - configtx: 包含通道创建配置信息的交易信封。
 func (r *Registrar) newChain(configtx *cb.Envelope) {
+	// 加写锁以确保在创建通道过程中的并发安全性。
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
+	// 从配置交易中提取通道名称。
 	channelName, err := channelNameFromConfigTx(configtx)
 	if err != nil {
-		logger.Warnf("Failed extracting channel name: %v", err)
+		// 如果提取通道名称失败，记录警告并返回。
+		logger.Warnf("提取通道名称失败: %v", err)
 		return
 	}
 
-	// fixes https://github.com/hyperledger/fabric/issues/2931
+	// 解决 https://github.com/hyperledger/fabric/issues/2931 问题。
+	// 检查是否已存在同名通道。
 	if existingChain, exists := r.chains[channelName]; exists {
+		// 若存在且为Raft类型的通道，记录日志并跳过创建。
 		if _, isRaftChain := existingChain.Chain.(*etcdraft.Chain); isRaftChain {
-			logger.Infof("Channel %s already created, skipping its creation", channelName)
+			logger.Infof("通道 %s 已经创建，跳过重复创建", channelName)
 			return
 		}
 	}
 
+	// 使用配置交易创建新通道的支持结构。
 	cs := r.createNewChain(configtx)
+	// 启动新创建的通道共识。
 	cs.start()
-	logger.Infof("Created and started new channel %s", cs.ChannelID())
+	// 记录日志，表明新通道已创建并启动。
+	logger.Infof("创建并启动了新通道 %s", cs.ChannelID())
 }
 
+// createNewChain 方法根据给定的配置交易创建一个新的通道支持结构（ChainSupport）。
+// 参数:
+//   - configtx: 包含通道创建配置信息的交易信封。
+//
+// 返回:
+//   - *ChainSupport: 新创建的通道支持实例。
 func (r *Registrar) createNewChain(configtx *cb.Envelope) *ChainSupport {
+	// 使用配置交易创建账本资源。
 	ledgerResources, err := r.newLedgerResources(configtx)
 	if err != nil {
-		logger.Panicf("Error creating ledger resources: %s", err)
+		// 如果创建账本资源失败，则记录错误信息并终止程序。
+		logger.Panicf("创建账本资源时发生错误: %s", err)
 	}
 
-	// If we have no blocks, we need to create the genesis block ourselves.
+	// 如果账本当前没有区块（高度为0），则需要自行创建创世区块。
 	if ledgerResources.Height() == 0 {
+		// 使用配置交易创建下一个区块（实际上为创世区块）并附加到账本。
 		if err := ledgerResources.Append(blockledger.CreateNextBlock(ledgerResources, []*cb.Envelope{configtx})); err != nil {
-			logger.Panicf("Error appending genesis block to ledger: %s", err)
+			// 创世区块附加失败时，记录错误信息并终止程序。
+			logger.Panicf("将创世区块附加到账本时发生错误: %s", err)
 		}
 	}
+
+	// 根据提供的资源和配置创建通道共识实例。
 	cs, err := newChainSupport(r, ledgerResources, r.consenters, r.signer, r.blockcutterMetrics, r.bccsp)
 	if err != nil {
-		logger.Panicf("Error creating chain support: %s", err)
+		// 创建通道支持实例失败时，记录错误信息并终止程序。
+		logger.Panicf("创建通道支持结构时发生错误: %s", err)
 	}
 
+	// 将新创建的通道支持实例添加到注册器的通道映射中。
 	chainID := ledgerResources.ConfigtxValidator().ChannelID()
 	r.chains[chainID] = cs
 
+	// 成功创建并配置后，返回新的通道支持实例。
 	return cs
 }
 

@@ -1,7 +1,7 @@
 /*
-Copyright IBM Corp. All Rights Reserved.
+版权所有 IBM Corp. 保留所有权利。
 
-SPDX-License-Identifier: Apache-2.0
+许可证标识符：Apache-2.0
 */
 
 package kafka
@@ -15,74 +15,82 @@ import (
 	"github.com/Shopify/sarama"
 )
 
+// newBrokerConfig 根据提供的配置选项创建一个新的 Sarama 配置对象，用于与 Kafka 交互。
 func newBrokerConfig(
-	tlsConfig localconfig.TLS,
-	saslPlain localconfig.SASLPlain,
-	retryOptions localconfig.Retry,
-	kafkaVersion sarama.KafkaVersion,
+	tlsConfig localconfig.TLS, // TLS 配置
+	saslPlain localconfig.SASLPlain, // SASL 平文认证配置
+	retryOptions localconfig.Retry, // 重试选项
+	kafkaVersion sarama.KafkaVersion, // Kafka 版本
 	chosenStaticPartition int32) *sarama.Config {
-	// Max. size for request headers, etc. Set in bytes. Too big on purpose.
+	// 为请求头等预留较大的缓冲区大小，单位为字节。
 	paddingDelta := 1 * 1024 * 1024
 
+	// 初始化一个新的 Sarama 配置
 	brokerConfig := sarama.NewConfig()
 
+	// 设置消费者重试间隔
 	brokerConfig.Consumer.Retry.Backoff = retryOptions.Consumer.RetryBackoff
 
-	// Allows us to retrieve errors that occur when consuming a channel
+	// 允许消费过程中返回错误
 	brokerConfig.Consumer.Return.Errors = true
 
+	// 设置元数据重试配置
 	brokerConfig.Metadata.Retry.Backoff = retryOptions.Metadata.RetryBackoff
 	brokerConfig.Metadata.Retry.Max = retryOptions.Metadata.RetryMax
 
+	// 设置网络超时选项
 	brokerConfig.Net.DialTimeout = retryOptions.NetworkTimeouts.DialTimeout
 	brokerConfig.Net.ReadTimeout = retryOptions.NetworkTimeouts.ReadTimeout
 	brokerConfig.Net.WriteTimeout = retryOptions.NetworkTimeouts.WriteTimeout
 
+	// 配置 TLS
 	brokerConfig.Net.TLS.Enable = tlsConfig.Enabled
 	if brokerConfig.Net.TLS.Enable {
-		// create public/private key pair structure
+		// 解析公钥和私钥
 		keyPair, err := tls.X509KeyPair([]byte(tlsConfig.Certificate), []byte(tlsConfig.PrivateKey))
 		if err != nil {
-			logger.Panic("Unable to decode public/private key pair:", err)
+			logger.Panic("无法解码公钥/私钥对:", err)
 		}
-		// create root CA pool
+		// 构建根证书池
 		rootCAs := x509.NewCertPool()
 		for _, certificate := range tlsConfig.RootCAs {
 			if !rootCAs.AppendCertsFromPEM([]byte(certificate)) {
-				logger.Panic("Unable to parse the root certificate authority certificates (Kafka.Tls.RootCAs)")
+				logger.Panic("无法解析根证书颁发机构证书 (Kafka.Tls.RootCAs)")
 			}
 		}
+		// 配置 TLS 客户端设置
 		brokerConfig.Net.TLS.Config = &tls.Config{
 			Certificates: []tls.Certificate{keyPair},
 			RootCAs:      rootCAs,
 			MinVersion:   tls.VersionTLS12,
-			MaxVersion:   0, // Latest supported TLS version
+			MaxVersion:   0, // 使用最新的 TLS 版本
 		}
 	}
+
+	// 配置 SASL 平文认证
 	brokerConfig.Net.SASL.Enable = saslPlain.Enabled
 	if brokerConfig.Net.SASL.Enable {
 		brokerConfig.Net.SASL.User = saslPlain.User
 		brokerConfig.Net.SASL.Password = saslPlain.Password
 	}
 
-	// Set equivalent of Kafka producer config max.request.bytes to the default
-	// value of a Kafka broker's socket.request.max.bytes property (100 MiB).
+	// 生产者最大消息大小设置，考虑到缓冲区
 	brokerConfig.Producer.MaxMessageBytes = int(sarama.MaxRequestSize) - paddingDelta
 
+	// 设置生产者重试配置
 	brokerConfig.Producer.Retry.Backoff = retryOptions.Producer.RetryBackoff
 	brokerConfig.Producer.Retry.Max = retryOptions.Producer.RetryMax
 
-	// A partitioner is actually not needed the way we do things now,
-	// but we're adding it now to allow for flexibility in the future.
+	// 分区器设置，当前静态分配分区, 参数为一个固定的int, 所有消息都发送到这个int的分区
 	brokerConfig.Producer.Partitioner = newStaticPartitioner(chosenStaticPartition)
-	// Set the level of acknowledgement reliability needed from the broker.
-	// WaitForAll means that the partition leader will wait till all ISRs got
-	// the message before sending back an ACK to the sender.
+
+	// 设置确认级别，WaitForAll 表示领导者会等待所有 ISR 节点收到消息后才发送 ACK
 	brokerConfig.Producer.RequiredAcks = sarama.WaitForAll
-	// An esoteric setting required by the sarama library, see:
-	// https://github.com/Shopify/sarama/issues/816
+
+	// 根据 Sarama 库的要求设置，确保生产者能接收到成功确认
 	brokerConfig.Producer.Return.Successes = true
 
+	// 设置 Kafka 版本
 	brokerConfig.Version = kafkaVersion
 
 	return brokerConfig

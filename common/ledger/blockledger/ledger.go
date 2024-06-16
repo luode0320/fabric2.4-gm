@@ -36,14 +36,13 @@ type Iterator interface {
 	Close()
 }
 
-// Reader allows the caller to inspect the ledger
+// Reader 接口允许调用者检查账本内容。
 type Reader interface {
-	// Iterator returns an Iterator, as specified by an ab.SeekInfo message, and
-	// its starting block number
+	// Iterator 根据 ab.SeekInfo 消息中指定的条件返回一个迭代器，以及迭代器的起始区块编号。
 	Iterator(startType *ab.SeekPosition) (Iterator, uint64)
-	// Height returns the number of blocks on the ledger
+	// Height 返回账本上区块的数量，即账本高度。
 	Height() uint64
-	// retrieve blockByNumber
+	// RetrieveBlockByNumber 根据区块编号检索账本中的区块。
 	RetrieveBlockByNumber(blockNumber uint64) (*cb.Block, error)
 }
 

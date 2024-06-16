@@ -24,21 +24,53 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Used for capturing metrics -- see processMessagesToBlocks
+// 用于捕获处理消息到区块过程中的各种情况的指标计数 -- 参见processMessagesToBlocks函数
 const (
+	// indexRecvError 接收消息时发生错误
 	indexRecvError = iota
+
+	// indexUnmarshalError 反序列化消息内容时出错
 	indexUnmarshalError
+
+	// indexRecvPass 消息接收成功
 	indexRecvPass
+
+	// indexProcessConnectPass 成功处理Connect类型消息
 	indexProcessConnectPass
+
+	// indexProcessTimeToCutError 在判断是否需要切割区块时发生错误
 	indexProcessTimeToCutError
+
+	// indexProcessTimeToCutPass 成功判断并处理切割区块的时机
 	indexProcessTimeToCutPass
+
+	// indexProcessRegularError 处理常规消息时出错
 	indexProcessRegularError
+
+	// indexProcessRegularPass 成功处理常规消息
 	indexProcessRegularPass
+
+	// indexSendTimeToCutError 在需要切割区块时发送信号出错
 	indexSendTimeToCutError
+
+	// indexSendTimeToCutPass 成功发送切割区块的信号
 	indexSendTimeToCutPass
+
+	// indexExitChanPass 通过退出通道成功传递信号
 	indexExitChanPass
 )
 
+// newChain 用于根据提供的共识器、支持资源以及偏移量信息创建一个新的链实例。
+// 参数:
+//   - consenter: 满足commonConsenter接口的共识器实例，提供了基础配置和度量指标。
+//   - support: 提供了链操作支持，如账本访问、配置验证等功能。
+//   - lastOffsetPersisted: 上次持久化消息的偏移量。
+//   - lastOriginalOffsetProcessed: 最后处理的原始消息偏移量。
+//   - lastResubmittedConfigOffset: 最后重新提交的配置消息偏移量。
+//
+// 返回:
+//   - *chainImpl: 新创建的链实例。
+//   - error: 如果创建过程中发生错误。
 func newChain(
 	consenter commonConsenter,
 	support consensus.ConsenterSupport,
@@ -46,105 +78,196 @@ func newChain(
 	lastOriginalOffsetProcessed int64,
 	lastResubmittedConfigOffset int64,
 ) (*chainImpl, error) {
+	// 获取上次截断区块的高度 = 最新的区块高度 - 1
 	lastCutBlockNumber := getLastCutBlockNumber(support.Height())
-	logger.Infof("[channel: %s] Starting chain with last persisted offset %d and last recorded block [%d]",
+	// 记录日志，表明链启动并记录相关偏移量和最后截断的区块高度
+	logger.Infof("[通道: %s] 启动链，最后持久化偏移量为 %d，最后记录的区块编号为 [%d]",
 		support.ChannelID(), lastOffsetPersisted, lastCutBlockNumber)
 
+	// 初始化信号量，用于控制是否完成重新处理飞行中的消息
 	doneReprocessingMsgInFlight := make(chan struct{})
-	// In either one of following cases, we should unblock ingress messages:
-	// - lastResubmittedConfigOffset == 0, where we've never resubmitted any config messages
-	// - lastResubmittedConfigOffset == lastOriginalOffsetProcessed, where the latest config message we resubmitted
-	//   has been processed already
-	// - lastResubmittedConfigOffset < lastOriginalOffsetProcessed, where we've processed one or more resubmitted
-	//   normal messages after the latest resubmitted config message. (we advance `lastResubmittedConfigOffset` for
-	//   config messages, but not normal messages)
+	// 1. 从未重新提交过任何配置消息（lastResubmittedConfigOffset == 0）
+	// 2. 最近重新提交的配置消息已经被处理（lastResubmittedConfigOffset == lastOriginalOffsetProcessed）
+	// 3. 在最新的重新提交配置消息之后，已经处理了一个或多个普通消息（lastResubmittedConfigOffset < lastOriginalOffsetProcessed）
 	if lastResubmittedConfigOffset == 0 || lastResubmittedConfigOffset <= lastOriginalOffsetProcessed {
-		// If we've already caught up with the reprocessing resubmitted messages, close the channel to unblock broadcast
+		// 已经跟上重新处理进度，关闭通道以允许广播继续
 		close(doneReprocessingMsgInFlight)
 	}
 
+	// 更新共识器的度量指标，记录最后持久化偏移量
 	consenter.Metrics().LastOffsetPersisted.With("channel", support.ChannelID()).Set(float64(lastOffsetPersisted))
 
+	// 创建并返回chainImpl实例，初始化内部成员变量
 	return &chainImpl{
-		consenter:                   consenter,
-		ConsenterSupport:            support,
-		channel:                     newChannel(support.ChannelID(), defaultPartition),
-		lastOffsetPersisted:         lastOffsetPersisted,
-		lastOriginalOffsetProcessed: lastOriginalOffsetProcessed,
-		lastResubmittedConfigOffset: lastResubmittedConfigOffset,
-		lastCutBlockNumber:          lastCutBlockNumber,
+		consenter:                   consenter,                                         // 共识器实例
+		ConsenterSupport:            support,                                           // 支持资源
+		channel:                     newChannel(support.ChannelID(), defaultPartition), // 创建通道实例
+		lastOffsetPersisted:         lastOffsetPersisted,                               // 持久化偏移量
+		lastOriginalOffsetProcessed: lastOriginalOffsetProcessed,                       // 处理的偏移量
+		lastResubmittedConfigOffset: lastResubmittedConfigOffset,                       // 重新提交的配置偏移量
+		lastCutBlockNumber:          lastCutBlockNumber,                                // 最后截断的区块号
 
-		haltChan:                    make(chan struct{}),
-		startChan:                   make(chan struct{}),
-		doneReprocessingMsgInFlight: doneReprocessingMsgInFlight,
+		haltChan:                    make(chan struct{}),         // 用于停止链的通道
+		startChan:                   make(chan struct{}),         // 用于启动链的通道
+		doneReprocessingMsgInFlight: doneReprocessingMsgInFlight, // 重新处理消息完成信号
 	}, nil
 }
 
 //go:generate counterfeiter -o mock/sync_producer.go --fake-name SyncProducer . syncProducer
 
+// syncProducer 接口定义了一组方法，用于同步地向Kafka brokers发送消息。
 type syncProducer interface {
+	// SendMessage 发送单个生产者消息至Kafka。返回消息被分配的分区编号、在该分区的偏移量以及可能的错误。
 	SendMessage(msg *sarama.ProducerMessage) (partition int32, offset int64, err error)
+
+	// SendMessages 批量发送生产者消息至Kafka。接受一个消息切片作为参数，返回错误（如果有）。
 	SendMessages(msgs []*sarama.ProducerMessage) error
+
+	// Close 关闭同步生产者，释放相关资源，返回关闭操作时可能发生的错误。
 	Close() error
 }
 
+// kafka共识结构体
 type chainImpl struct {
+	// kafka配置
 	consenter commonConsenter
+
+	// 继承自 consensus.ConsenterSupport 接口，提供了链支持功能，如账本访问和配置支持。
 	consensus.ConsenterSupport
 
-	channel                     channel
-	lastOffsetPersisted         int64
-	lastOriginalOffsetProcessed int64
-	lastResubmittedConfigOffset int64
-	lastCutBlockNumber          uint64
+	// 表示当前链的kafka的相关信息, 包括主题和分区名称等。
+	channel channel
 
-	producer        syncProducer
-	parentConsumer  sarama.Consumer
+	// 记录了最后一次持久化消息的偏移量。
+	lastOffsetPersisted int64
+
+	// 记录了最后一次处理的原始消息偏移量。
+	lastOriginalOffsetProcessed int64
+
+	// 记录了最近重新提交的配置消息的偏移量。
+	lastResubmittedConfigOffset int64
+
+	// 记录了最近截断的区块编号。
+	lastCutBlockNumber uint64
+
+	// 是同步消息生产者的实例，用于向Kafka发送消息。
+	producer syncProducer
+
+	// parentConsumer 是Sarama消费者实例，用于从Kafka主题消费消息。
+	parentConsumer sarama.Consumer
+
+	// channelConsumer 是针对特定分区的消费者，用于从Kafka的单一分区消费消息。
 	channelConsumer sarama.PartitionConsumer
 
-	// mutex used when changing the doneReprocessingMsgInFlight
+	// doneReprocessingMutex 用于在改变 doneReprocessingMsgInFlight 状态时进行同步。
 	doneReprocessingMutex sync.Mutex
-	// notification that there are in-flight messages need to wait for
+
+	// doneReprocessingMsgInFlight 用于通知是否有待处理的飞行中消息需要等待。
 	doneReprocessingMsgInFlight chan struct{}
 
-	// When the partition consumer errors, close the channel. Otherwise, make
-	// this an open, unbuffered channel.
+	// errorChan 当分区消费者发生错误时关闭，用以传播错误状态。
 	errorChan chan struct{}
-	// When a Halt() request comes, close the channel. Unlike errorChan, this
-	// channel never re-opens when closed. Its closing triggers the exit of the
-	// processMessagesToBlock loop.
-	haltChan chan struct{}
-	// notification that the chain has stopped processing messages into blocks
+
+	// doneProcessingMessagesToBlocks 通知链已完成将消息处理成区块。
 	doneProcessingMessagesToBlocks chan struct{}
-	// Close when the retriable steps in Start have completed.
+
+	// 当启动过程中的可重试步骤完成时关闭，表示启动完成。
 	startChan chan struct{}
-	// timer controls the batch timeout of cutting pending messages into block
+
+	// 接收到停止请求时关闭，一旦关闭将触发消息处理循环的退出，且不会再打开。
+	haltChan chan struct{}
+
+	// timer 控制将待处理消息打包进区块的批处理超时时间。
 	timer <-chan time.Time
 
+	// replicaIDs 列出了该链的副本ID列表，与Kafka分区对应。
 	replicaIDs []int32
 }
 
-// Errored returns a channel which will close when a partition consumer error
-// has occurred. Checked by Deliver().
+// Errored 返回一个通道，当分区消费者发生错误时，此通道将被关闭。
+// 此方法由Deliver()函数调用以检查错误状态。
 func (chain *chainImpl) Errored() <-chan struct{} {
+	// 检查启动阶段是否已完成
 	select {
-	case <-chain.startChan:
+	case <-chain.startChan: // 如果启动已完成
+		// 直接返回记录真实错误状态的通道
 		return chain.errorChan
-	default:
-		// While the consenter is starting, always return an error
+	default: // 如果启动还未完成
+		// 创建并立即关闭一个“哑”错误通道，用以指示在启动过程中始终视为存在错误
 		dummyError := make(chan struct{})
 		close(dummyError)
+		// 返回已关闭的通道，表示错误状态（尽管这可能仅是启动过程中的临时状态）
 		return dummyError
 	}
 }
 
-// Start allocates the necessary resources for staying up to date with this
-// Chain. Implements the consensus.Chain interface. Called by
-// consensus.NewManagerImpl() which is invoked when the ordering process is
-// launched, before the call to NewServer(). Launches a goroutine so as not to
-// block the consensus.Manager.
+// Start 启动共识的主循环处理过程。
 func (chain *chainImpl) Start() {
+	// 启动一个新的goroutine来执行startThread函数，确保Start方法本身不会阻塞
 	go startThread(chain)
+}
+
+// 作为启动共识处理流程的入口点，负责执行一系列初始化操作，包括但不限于创建Kafka主题、设置生产者与消费者、发送CONNECT消息、获取副本信息等
+// 确保链能够开始正常工作并保持与Kafka主题的数据同步。
+// 所有步骤完成后，会启动一个循环处理消息至区块的流程，以维护链的实时状态。
+func startThread(chain *chainImpl) {
+	var err error
+
+	// 如果通道对应的Kafka主题尚不存在，则为其创建(如你所见, 仅仅时为了创建主题)。
+	// 因为通道是动态创建的, 而通道就是kafka的主题, 所有不可能创建kafka连接的时候就默认一个主题
+	// 而是根据创建的通道动态创建主题
+	err = setupTopicForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.consenter.topicDetail(), chain.channel)
+	if err != nil {
+		// 当前仅记录日志，如果主题创建失败，则依赖于Kafka代理的自动创建主题设置
+		logger.Infof("[通道: %s] 创建Kafka主题失败 = %s", chain.channel.topic(), err)
+	}
+
+	// 初始化生产者
+	chain.producer, err = setupProducerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.channel)
+	if err != nil {
+		logger.Panicf("[通道: %s] 无法设置生产者 = %s", chain.channel.topic(), err)
+	}
+	logger.Infof("[通道: %s] 生产者设置成功", chain.ChannelID())
+
+	// 使用生产者发送CONNECT消息
+	if err = sendConnectMessage(chain.consenter.retryOptions(), chain.haltChan, chain.producer, chain.channel); err != nil {
+		logger.Panicf("[通道: %s] 无法发送CONNECT消息 = %s", chain.channel.topic(), err)
+	}
+	logger.Infof("[通道: %s] CONNECT消息发送成功", chain.channel.topic())
+
+	// 初始化父级消费者
+	chain.parentConsumer, err = setupParentConsumerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.channel)
+	if err != nil {
+		logger.Panicf("[通道: %s] 无法设置父级消费者 = %s", chain.channel.topic(), err)
+	}
+	logger.Infof("[通道: %s] 父级消费者设置成功", chain.channel.topic())
+
+	// 初始化通道消费者
+	chain.channelConsumer, err = setupChannelConsumerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.parentConsumer, chain.channel, chain.lastOffsetPersisted+1)
+	if err != nil {
+		logger.Panicf("[通道: %s] 无法设置通道消费者 = %s", chain.channel.topic(), err)
+	}
+	logger.Infof("[通道: %s] 通道消费者设置成功", chain.channel.topic())
+
+	// 获取健康集群副本信息
+	chain.replicaIDs, err = getHealthyClusterReplicaInfo(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.channel)
+	if err != nil {
+		logger.Panicf("[通道: %s] 获取副本ID失败 = %s", chain.channel.topic(), err)
+	}
+
+	// 初始化doneProcessingMessagesToBlocks通道
+	chain.doneProcessingMessagesToBlocks = make(chan struct{})
+
+	// 初始化errorChan通道，用于Deliver请求的错误传递
+	chain.errorChan = make(chan struct{})
+
+	// 关闭startChan，允许Broadcast请求通过
+	close(chain.startChan)
+
+	logger.Infof("[通道: %s] 启动阶段完成成功", chain.channel.topic())
+
+	// 开始处理消息至区块的循环，保持与通道的最新状态同步
+	chain.processMessagesToBlocks()
 }
 
 // Halt frees the resources which were allocated for this Chain. Implements the
@@ -224,119 +347,103 @@ func (chain *chainImpl) order(env *cb.Envelope, configSeq uint64, originalOffset
 	return nil
 }
 
-// Implements the consensus.Chain interface. Called by Broadcast().
+// 此方法由Broadcast函数调用
 func (chain *chainImpl) Configure(config *cb.Envelope, configSeq uint64) error {
+	// 调用内部的configure方法以处理配置更新，此处originalOffset初始化为0，因为它是由Broadcast直接调用，
+	// 而非重放或恢复过程中，所以不需要特定的原始偏移量信息。
 	return chain.configure(config, configSeq, int64(0))
 }
 
+// 负责配置处理，将配置更新消息封装并尝试入队。
+// 参数:
+//   - config: 配置更新的信封。
+//   - configSeq: 配置序列号，标识配置更新的顺序。
+//   - originalOffset: 原始消息偏移量，与消息在日志中的位置相关。
+//
+// 返回:
+//   - error: 如果在序列化配置、创建配置消息或尝试入队时发生错误，则返回相应的错误信息。
 func (chain *chainImpl) configure(config *cb.Envelope, configSeq uint64, originalOffset int64) error {
+	// 将配置信封序列化为字节数组
 	marshaledConfig, err := protoutil.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("cannot enqueue, unable to marshal config because %s", err)
+		// 序列化失败时，返回错误信息
+		return fmt.Errorf("无法入队，因为无法序列化配置信息，错误原因是 %s", err)
 	}
-	if !chain.enqueue(newConfigMessage(marshaledConfig, configSeq, originalOffset)) {
-		return fmt.Errorf("cannot enqueue")
+	// 使用序列化后的配置信息创建一个新的配置消息
+	configMsg := newConfigMessage(marshaledConfig, configSeq, originalOffset)
+	// 尝试将配置消息加入到发送队列中
+	if !chain.enqueue(configMsg) {
+		// 若消息未能成功入队，返回错误信息
+		return fmt.Errorf("无法入队")
 	}
+	// 成功入队，返回nil表示无错误
 	return nil
 }
 
-// enqueue accepts a message and returns true on acceptance, or false otherwise.
+// 接收一个*KafkaMessage类型的消息，并尝试将其加入到发送队列中。
+// 如果消息成功入队，则返回true；否则，返回false。
 func (chain *chainImpl) enqueue(kafkaMsg *ab.KafkaMessage) bool {
-	logger.Debugf("[channel: %s] Enqueueing envelope...", chain.ChannelID())
+	// 记录调试日志，表明正在为指定通道入队Kafka消息
+	logger.Debugf("[channel: %s] 正在入队Kafka...", chain.ChannelID())
+
+	// 使用select语句检查当前链的状态
 	select {
-	case <-chain.startChan: // The Start phase has completed
+	case <-chain.startChan: // 当启动阶段已完成
+		// 再次使用select嵌套判断链是否已被停止
 		select {
-		case <-chain.haltChan: // The chain has been halted, stop here
-			logger.Warningf("[channel: %s] consenter for this channel has been halted", chain.ChannelID())
+		case <-chain.haltChan: // 如果链已停止，则记录警告日志并返回false
+			logger.Warningf("[channel: %s] 该通道的共识器已被停止", chain.ChannelID())
 			return false
-		default: // The post path
+		default: // 否则，继续执行消息发送逻辑
+			// 将Kafka消息序列化为字节数组
 			payload, err := protoutil.Marshal(kafkaMsg)
 			if err != nil {
-				logger.Errorf("[channel: %s] unable to marshal Kafka message because = %s", chain.ChannelID(), err)
+				// 序列化失败时记录错误日志，并返回false
+				logger.Errorf("[channel: %s] 无法序列化Kafka消息，原因：%s", chain.ChannelID(), err)
 				return false
 			}
+			// 使用newProducerMessage函数创建生产者消息实例
 			message := newProducerMessage(chain.channel, payload)
+			// 尝试通过生产者发送消息
 			if _, _, err = chain.producer.SendMessage(message); err != nil {
-				logger.Errorf("[channel: %s] cannot enqueue envelope because = %s", chain.ChannelID(), err)
+				// 发送失败时记录错误日志，并返回false
+				logger.Errorf("[channel: %s] 无法入队信封，原因：%s", chain.ChannelID(), err)
 				return false
 			}
-			logger.Debugf("[channel: %s] Envelope enqueued successfully", chain.ChannelID())
+			// 成功入队后记录调试日志
+			logger.Debugf("[channel: %s] 信封已成功入队", chain.ChannelID())
 			return true
 		}
-	default: // Not ready yet
-		logger.Warningf("[channel: %s] Will not enqueue, consenter for this channel hasn't started yet", chain.ChannelID())
+	default: // 如果链尚未启动，记录警告日志并返回false
+		logger.Warningf("[channel: %s] 尚未启动，不会入队Kafka", chain.ChannelID())
 		return false
 	}
 }
 
+// HealthCheck 方法用于检查链的健康状况。
+// 它通过向Kafka集群发送一个特殊的消息（CONNECT消息）来验证生产者是否能够成功通信。
 func (chain *chainImpl) HealthCheck(ctx context.Context) error {
 	var err error
 
+	// 创建一个新的CONNECT消息的payload，并将其序列化
 	payload := protoutil.MarshalOrPanic(newConnectMessage())
+
+	// 使用当前链的通道信息和序列化的payload创建一个新的ProducerMessage
 	message := newProducerMessage(chain.channel, payload)
 
+	// 尝试通过生产者发送此消息到Kafka
 	_, _, err = chain.producer.SendMessage(message)
 	if err != nil {
-		logger.Warnf("[channel %s] Cannot post CONNECT message = %s", chain.channel.topic(), err)
+		// 如果发送消息失败，记录警告日志
+		logger.Warnf("[通道 %s] 无法发布CONNECT消息，错误 = %s", chain.channel.topic(), err)
+		// 特别处理“没有足够副本”的错误，附加上副本ID的信息后重新抛出错误
 		if err == sarama.ErrNotEnoughReplicas {
-			errMsg := fmt.Sprintf("[replica ids: %d]", chain.replicaIDs)
+			errMsg := fmt.Sprintf("[副本ID: %d]", chain.replicaIDs)
 			return errors.WithMessage(err, errMsg)
 		}
 	}
+	// 如果没有错误，说明健康检查通过
 	return nil
-}
-
-// Called by Start().
-func startThread(chain *chainImpl) {
-	var err error
-
-	// Create topic if it does not exist (requires Kafka v0.10.1.0)
-	err = setupTopicForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.consenter.topicDetail(), chain.channel)
-	if err != nil {
-		// log for now and fallback to auto create topics setting for broker
-		logger.Infof("[channel: %s]: failed to create Kafka topic = %s", chain.channel.topic(), err)
-	}
-
-	// Set up the producer
-	chain.producer, err = setupProducerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.channel)
-	if err != nil {
-		logger.Panicf("[channel: %s] Cannot set up producer = %s", chain.channel.topic(), err)
-	}
-	logger.Infof("[channel: %s] Producer set up successfully", chain.ChannelID())
-
-	// Have the producer post the CONNECT message
-	if err = sendConnectMessage(chain.consenter.retryOptions(), chain.haltChan, chain.producer, chain.channel); err != nil {
-		logger.Panicf("[channel: %s] Cannot post CONNECT message = %s", chain.channel.topic(), err)
-	}
-	logger.Infof("[channel: %s] CONNECT message posted successfully", chain.channel.topic())
-
-	// Set up the parent consumer
-	chain.parentConsumer, err = setupParentConsumerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.channel)
-	if err != nil {
-		logger.Panicf("[channel: %s] Cannot set up parent consumer = %s", chain.channel.topic(), err)
-	}
-	logger.Infof("[channel: %s] Parent consumer set up successfully", chain.channel.topic())
-
-	// Set up the channel consumer
-	chain.channelConsumer, err = setupChannelConsumerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.parentConsumer, chain.channel, chain.lastOffsetPersisted+1)
-	if err != nil {
-		logger.Panicf("[channel: %s] Cannot set up channel consumer = %s", chain.channel.topic(), err)
-	}
-	logger.Infof("[channel: %s] Channel consumer set up successfully", chain.channel.topic())
-
-	chain.replicaIDs, err = getHealthyClusterReplicaInfo(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.channel)
-	if err != nil {
-		logger.Panicf("[channel: %s] failed to get replica IDs = %s", chain.channel.topic(), err)
-	}
-
-	chain.doneProcessingMessagesToBlocks = make(chan struct{})
-
-	chain.errorChan = make(chan struct{}) // Deliver requests will also go through
-	close(chain.startChan)                // Broadcast requests will now go through
-
-	logger.Infof("[channel: %s] Start phase completed successfully", chain.channel.topic())
-
-	chain.processMessagesToBlocks() // Keep up to date with the channel
 }
 
 // processMessagesToBlocks drains the Kafka consumer for the given channel, and
@@ -532,25 +639,53 @@ func getLastCutBlockNumber(blockchainHeight uint64) uint64 {
 	return blockchainHeight - 1
 }
 
+// getOffsets 函数用于从给定的元数据值中提取不同的偏移量信息。
+// 参数:
+//   - metadataValue: 包含Kafka元数据的字节切片。
+//   - chainID: 当前链的标识符字符串。
+//
+// 返回:
+//
+//   - persisted: 最后一个已持久化的消息偏移量。
+//     在Hyperledger Fabric中，这意味着区块链账本中最后一条被确认并且已安全写入存储的消息对应的Kafka消息偏移量。
+//     此偏移量对于系统恢复特别重要，因为它指示了从Kafka中应该开始读取的点，以确保账本数据的连续性和完整性。
+//     如果Orderer节点重启或者有新节点加入，会使用此偏移量来确定从哪个位置开始读取消息，以确保不会遗漏或重复处理任何交易。
+//
+//   - processed: 用于在重新验证和重新排序消息时跟踪处理的最新偏移量。此值用于删除来自多个排序程序的重新提交的重复消息，以便我们不必再次重新处理它。
+//     在普通的业务消息处理流程中，这是Orderer处理消息流中的最后一个消息的位置。
+//     它帮助跟踪消息处理进度，确保系统了解哪些消息已经被成功处理。
+//     这个值在故障恢复时也很关键，帮助系统知道从哪里恢复正常的业务消息处理流程。
+//
+//   - resubmitted: 最后一次重新提交的配置更新消息的偏移量。通过将其与 LastOriginalOffsetProcessed 进行比较，我们可以确定是否仍有已重新提交但尚未处理的 CONFIG 消息
+//     在Fabric中，配置更新（比如通道配置更改）是非常重要的操作，通常需要确保其被网络中的所有Orderer节点正确应用。
+//     如果配置更新消息因为某种原因没有被正确处理，可能需要重新提交。
+//     这个属性帮助追踪最后一次成功处理的配置更新消息的位置，确保配置的一致性和正确性，尤其是在系统恢复或动态配置更新场景下。
 func getOffsets(metadataValue []byte, chainID string) (persisted int64, processed int64, resubmitted int64) {
 	if metadataValue != nil {
-		// Extract orderer-related metadata from the tip of the ledger first
+		// 首先从账本提示中提取与排序器相关的元数据
 		kafkaMetadata := &ab.KafkaMetadata{}
 		if err := proto.Unmarshal(metadataValue, kafkaMetadata); err != nil {
-			logger.Panicf("[channel: %s] Ledger may be corrupted:"+
-				"cannot unmarshal orderer metadata in most recent block", chainID)
+			// 如果无法反序列化解析排序器元数据，则认为账本可能已损坏，并记录错误信息后终止程序
+			logger.Panicf("[channel: %s] 账本可能存在损坏："+
+				"无法反序列化最近块中的排序器元数据", chainID)
 		}
 		return kafkaMetadata.LastOffsetPersisted,
 			kafkaMetadata.LastOriginalOffsetProcessed,
 			kafkaMetadata.LastResubmittedConfigOffset
 	}
-	return sarama.OffsetOldest - 1, int64(0), int64(0) // default
+
+	// 若无有效元数据，则返回kafka最旧的一次偏移量
+	return sarama.OffsetOldest - 1, int64(0), int64(0) // 默认值
 }
 
+// 用于创建一个新的CONNECT类型Kafka消息结构体。
+// 这种类型的消息通常用于健康检查或维持与Kafka服务器的活跃连接状态。
 func newConnectMessage() *ab.KafkaMessage {
 	return &ab.KafkaMessage{
+		// 指定消息类型为Connect
 		Type: &ab.KafkaMessage_Connect{
 			Connect: &ab.KafkaMessageConnect{
+				// Connect消息的负载在此场景下为空
 				Payload: nil,
 			},
 		},
@@ -570,13 +705,29 @@ func newNormalMessage(payload []byte, configSeq uint64, originalOffset int64) *a
 	}
 }
 
+// 用于创建一个新的配置类型Kafka消息。
+// 参数:
+//   - config: 配置数据的字节切片形式。
+//   - configSeq: 配置序列号，用于追踪配置更新的版本。
+//   - originalOffset: 源消息的偏移量，用于引用或追踪消息在日志中的原始位置。
+//
+// 返回:
+//   - *ab.KafkaMessage: 一个封装了配置信息的Kafka消息实例，类型标记为配置（CONFIG）。
 func newConfigMessage(config []byte, configSeq uint64, originalOffset int64) *ab.KafkaMessage {
 	return &ab.KafkaMessage{
+		// 指定消息类型为常规消息，并进一步细化为配置类型
 		Type: &ab.KafkaMessage_Regular{
 			Regular: &ab.KafkaMessageRegular{
-				Payload:        config,
-				ConfigSeq:      configSeq,
-				Class:          ab.KafkaMessageRegular_CONFIG,
+				// 配置消息的有效载荷
+				Payload: config,
+
+				// 配置序列号，标识此配置更新的唯一序号
+				ConfigSeq: configSeq,
+
+				// 消息类别明确标记为配置（CONFIG）
+				Class: ab.KafkaMessageRegular_CONFIG,
+
+				// 源消息在日志中的偏移量，保持消息的上下文关系
 				OriginalOffset: originalOffset,
 			},
 		},
@@ -593,10 +744,23 @@ func newTimeToCutMessage(blockNumber uint64) *ab.KafkaMessage {
 	}
 }
 
+// 用于创建一个新的`sarama.ProducerMessage`实例，该实例封装了准备发送至Kafka的消息细节。
+// 参数:
+//   - channel: 指定消息要发送到的Kafka主题通道信息。
+//   - pld: 需要发送的实际消息负载（字节切片形式）。
+//
+// 返回:
+//   - *sarama.ProducerMessage: 一个填充了主题、键、值的生产者消息实例，准备用于发送。
 func newProducerMessage(channel channel, pld []byte) *sarama.ProducerMessage {
 	return &sarama.ProducerMessage{
+		// 设置消息要发送到的Kafka主题名称
 		Topic: channel.topic(),
-		Key:   sarama.StringEncoder(strconv.Itoa(int(channel.partition()))), // TODO Consider writing an IntEncoder?
+
+		// 设置消息的键，这里将通道的分区号转换为字符串作为键。
+		// 注意：这里使用了`strconv.Itoa`来将整数转为字符串，并且有注释提示未来可以考虑实现一个更直接的`IntEncoder`。
+		Key: sarama.StringEncoder(strconv.Itoa(int(channel.partition()))),
+
+		// 设置消息的值，直接使用提供的字节切片作为消息负载
 		Value: sarama.ByteEncoder(pld),
 	}
 }
@@ -1021,19 +1185,23 @@ func setupProducerForChannel(retryOptions localconfig.Retry, haltChan chan struc
 	return producer, setupProducer.retry()
 }
 
-// Creates the Kafka topic for the channel if it does not already exist
+// 如果频道对应的Kafka主题尚不存在，则为其创建(如你所见, 仅仅时为了创建主题)。
+// 因为通道是动态创建的, 而通道就是主题, 所有不可能创建kafka连接的时候就默认一个主题
+// 而是根据创建的通道动态创建主题
 func setupTopicForChannel(retryOptions localconfig.Retry, haltChan chan struct{}, brokers []string, brokerConfig *sarama.Config, topicDetail *sarama.TopicDetail, channel channel) error {
-	// requires Kafka v0.10.1.0 or higher
+	// 要求Kafka版本至少为v0.10.1.0
 	if !brokerConfig.Version.IsAtLeast(sarama.V0_10_1_0) {
 		return nil
 	}
 
-	logger.Infof("[channel: %s] Setting up the topic for this channel...",
-		channel.topic())
+	// 记录日志，表明开始为当前通道设置主题
+	logger.Infof("[通道: %s] 正在为此通道设置主题...", channel.topic())
 
-	retryMsg := fmt.Sprintf("Creating Kafka topic [%s] for channel [%s]",
+	// 定义重试逻辑的消息
+	retryMsg := fmt.Sprintf("为通道 [%s] 创建Kafka主题 [%s]",
 		channel.topic(), channel.String())
 
+	// 初始化一个重试过程
 	setupTopic := newRetryProcess(
 		retryOptions,
 		haltChan,
@@ -1041,10 +1209,10 @@ func setupTopicForChannel(retryOptions localconfig.Retry, haltChan chan struct{}
 		retryMsg,
 		func() error {
 			var err error
-			clusterMembers := map[int32]*sarama.Broker{}
-			var controllerId int32
+			clusterMembers := make(map[int32]*sarama.Broker) // 存储集群中的代理信息
+			var controllerId int32                           // 控制器ID
 
-			// loop through brokers to access metadata
+			// 遍历所有代理地址，获取元数据
 			for _, address := range brokers {
 				broker := sarama.NewBroker(address)
 				err = broker.Open(brokerConfig)
@@ -1058,12 +1226,10 @@ func setupTopicForChannel(retryOptions localconfig.Retry, haltChan chan struct{}
 				}
 				defer broker.Close()
 
-				// metadata request which includes the topic
+				// 发起元数据请求，根据Kafka版本选择API版本
 				var apiVersion int16
 				if brokerConfig.Version.IsAtLeast(sarama.V0_11_0_0) {
-					// use API version 4 to disable auto topic creation for
-					// metadata requests
-					apiVersion = 4
+					apiVersion = 4 // 禁止自动创建主题
 				} else {
 					apiVersion = 1
 				}
@@ -1081,25 +1247,23 @@ func setupTopicForChannel(retryOptions localconfig.Retry, haltChan chan struct{}
 					clusterMembers[broker.ID()] = broker
 				}
 
+				// 检查主题是否已存在或有错误
 				for _, topic := range metadata.Topics {
 					if topic.Name == channel.topic() {
 						if topic.Err != sarama.ErrUnknownTopicOrPartition {
-							// auto create topics must be enabled so return
-							return nil
+							return nil // 自动创建主题已启用，无需操作
 						}
 					}
 				}
-				break
+				break // 成功获取元数据后跳出循环
 			}
 
-			// check to see if we got any metadata from any of the brokers in the list
+			// 确认是否获取到了集群元数据
 			if len(clusterMembers) == 0 {
-				return fmt.Errorf(
-					"error creating topic [%s]; failed to retrieve metadata for the cluster",
-					channel.topic())
+				return fmt.Errorf("为创建主题 [%s] 失败，无法获取集群元数据", channel.topic())
 			}
 
-			// get the controller
+			// 连接到控制器并创建主题
 			controller := clusterMembers[controllerId]
 			err = controller.Open(brokerConfig)
 
@@ -1113,7 +1277,8 @@ func setupTopicForChannel(retryOptions localconfig.Retry, haltChan chan struct{}
 				return err
 			}
 			defer controller.Close()
-			// create the topic
+
+			// 构建创建主题的请求
 			req := &sarama.CreateTopicsRequest{
 				Version: 0,
 				TopicDetails: map[string]*sarama.TopicDetail{
@@ -1126,29 +1291,23 @@ func setupTopicForChannel(retryOptions localconfig.Retry, haltChan chan struct{}
 				return err
 			}
 
-			// check the response
+			// 检查响应中的错误
 			if topicErr, ok := resp.TopicErrors[channel.topic()]; ok {
-				// treat no error and topic exists error as success
-				if topicErr.Err == sarama.ErrNoError ||
-					topicErr.Err == sarama.ErrTopicAlreadyExists {
-					return nil
+				if topicErr.Err == sarama.ErrNoError || topicErr.Err == sarama.ErrTopicAlreadyExists {
+					return nil // 主题已存在或无错误，视为成功
 				}
 				if topicErr.Err == sarama.ErrInvalidTopic {
-					// topic is invalid so abort
-					logger.Warningf("[channel: %s] Failed to set up topic = %s",
-						channel.topic(), topicErr.Err.Error())
-					go func() {
-						haltChan <- struct{}{}
-					}()
+					// 主题无效，记录警告并停止通道
+					logger.Warningf("[通道: %s] 创建主题失败，原因 = %s", channel.topic(), topicErr.Err.Error())
+					go func() { haltChan <- struct{}{} }()
 				}
-				return fmt.Errorf("error creating topic: [%s]",
-					topicErr.Err.Error())
+				return fmt.Errorf("创建主题时出错: [%s]", topicErr.Err.Error())
 			}
 
 			return nil
 		})
 
-	return setupTopic.retry()
+	return setupTopic.retry() // 执行重试逻辑
 }
 
 // Replica ID information can accurately be retrieved only when the cluster
