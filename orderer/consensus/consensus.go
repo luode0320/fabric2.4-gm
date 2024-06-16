@@ -1,12 +1,13 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+版权所有 IBM Corp. 2017保留所有权利。
 
 SPDX-License-Identifier: Apache-2.0
 */
 
-package consensus
+package consensus // 包含共识相关接口和类型定义
 
 import (
+	// 引入必要的依赖库
 	cb "github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/internal/pkg/identity"
@@ -15,136 +16,117 @@ import (
 	"github.com/hyperledger/fabric/protoutil"
 )
 
-// Consenter defines the backing ordering mechanism.
+// Consenter 定义了底层排序机制的接口。
 type Consenter interface {
-	// HandleChain should create and return a reference to a Chain for the given set of resources.
-	// It will only be invoked for a given chain once per process.  In general, errors will be treated
-	// as irrecoverable and cause system shutdown.  See the description of Chain for more details
-	// The second argument to HandleChain is a pointer to the metadata stored on the `ORDERER` slot of
-	// the last block committed to the ledger of this Chain. For a new chain, or one which is migrated,
-	// this metadata will be nil (or contain a zero-length Value), as there is no prior metadata to report.
+	// HandleChain 应基于给定的资源集合创建并返回链的引用。
+	// 对于每个进程中的特定链，此方法只会被调用一次。通常情况下，错误会被视为不可恢复的，并导致系统关闭。
+	// 有关更多详细信息，请参阅Chain的描述。
+	// HandleChain的第二个参数是指向ORDERER槽中上一个提交到此链账本的区块的元数据指针。
+	// 对于新链或迁移后的链，此元数据将为nil（或包含零长度的Value），因为没有先前的元数据可报告。
 	HandleChain(support ConsenterSupport, metadata *cb.Metadata) (Chain, error)
 }
 
-// ClusterConsenter defines methods implemented by cluster-type consenters.
+// ClusterConsenter 定义由集群类型共识者实现的方法。
 type ClusterConsenter interface {
-	// IsChannelMember inspects the join block and detects whether it implies that this orderer is a member of the
-	// channel. It returns true if the orderer is a member of the consenters set, and false if it is not. The method
-	// also inspects the consensus type metadata for validity. It returns an error if membership cannot be determined
-	// due to errors processing the block.
+	// IsChannelMember 检查加入区块并检测它是否表明此排序器是通道成员。
+	// 如果排序器属于共识者集合，则返回true；否则返回false。此方法还会检查共识类型元数据的有效性。
+	// 如果因处理区块错误而无法确定成员资格，则返回错误。
 	IsChannelMember(joinBlock *cb.Block) (bool, error)
-	// RemoveInactiveChainRegistry stops and removes the inactive chain registry.
-	// This is used when removing the system channel.
+	// RemoveInactiveChainRegistry 停止并移除不活动的链注册表。
+	// 这在删除系统通道时使用。
 	RemoveInactiveChainRegistry()
 }
 
-// MetadataValidator performs the validation of updates to ConsensusMetadata during config updates to the channel.
-// NOTE: We expect the MetadataValidator interface to be optionally implemented by the Consenter implementation.
-//
-//	If a Consenter does not implement MetadataValidator, we default to using a no-op MetadataValidator.
+// MetadataValidator 定义了对通道配置更新期间ConsensusMetadata更新的验证操作。
+// 注意：我们期望Consenter实现可选择性地实现MetadataValidator接口。
+// 如果Consenter未实现MetadataValidator，我们将默认使用一个无操作的MetadataValidator。
 type MetadataValidator interface {
-	// ValidateConsensusMetadata determines the validity of a ConsensusMetadata update during config
-	// updates on the channel.
-	// Since the ConsensusMetadata is specific to the consensus implementation (independent of the particular
-	// chain) this validation also needs to be implemented by the specific consensus implementation.
+	// ValidateConsensusMetadata 在通道上的配置更新期间决定ConsensusMetadata更新的有效性。
+	// 由于ConsensusMetadata特定于共识实现（独立于特定链），此验证也需要由特定的共识实现来执行。
 	ValidateConsensusMetadata(oldOrdererConfig, newOrdererConfig channelconfig.Orderer, newChannel bool) error
 }
 
-// Chain defines a way to inject messages for ordering.
-// Note, that in order to allow flexibility in the implementation, it is the responsibility of the implementer
-// to take the ordered messages, send them through the blockcutter.Receiver supplied via HandleChain to cut blocks,
-// and ultimately write the ledger also supplied via HandleChain.  This design allows for two primary flows
-// 1. Messages are ordered into a stream, the stream is cut into blocks, the blocks are committed (solo, kafka)
-// 2. Messages are cut into blocks, the blocks are ordered, then the blocks are committed (sbft)
+// Chain 定义了一种注入消息进行排序的方式。
+// 注意，为了允许实现的灵活性，由实现者负责将已排序的消息通过HandleChain提供的blockcutter.Receiver进行切割成块，
+// 并最终写入也是由HandleChain提供的账本。这设计支持两种主要流程：
+// 1. 消息按顺序进入流，流被切割成块，块被提交（例如solo、kafka）
+// 2. 消息被切割成块，块被排序，然后块被提交（例如sbft）
 type Chain interface {
-	// Order accepts a message which has been processed at a given configSeq.
-	// If the configSeq advances, it is the responsibility of the consenter
-	// to revalidate and potentially discard the message
-	// The consenter may return an error, indicating the message was not accepted
+	// Order 接受在给定configSeq下处理的消息。
+	// 如果configSeq前进，共识者有责任重新验证并可能丢弃消息。
+	// 共识者可能会返回错误，表示消息未被接受。
 	Order(env *cb.Envelope, configSeq uint64) error
 
-	// Configure accepts a message which reconfigures the channel and will
-	// trigger an update to the configSeq if committed.  The configuration must have
-	// been triggered by a ConfigUpdate message. If the config sequence advances,
-	// it is the responsibility of the consenter to recompute the resulting config,
-	// discarding the message if the reconfiguration is no longer valid.
-	// The consenter may return an error, indicating the message was not accepted
+	// Configure 接受重新配置通道的消息，并会在提交时触发configSeq的更新。
+	// 配置必须由ConfigUpdate消息触发。如果config序列前进，共识者有责任重新计算结果配置，
+	// 如果重新配置不再有效，则丢弃消息。共识者可能会返回错误，表示消息未被接受。
 	Configure(config *cb.Envelope, configSeq uint64) error
 
-	// WaitReady blocks waiting for consenter to be ready for accepting new messages.
-	// This is useful when consenter needs to temporarily block ingress messages so
-	// that in-flight messages can be consumed. It could return error if consenter is
-	// in erroneous states. If this blocking behavior is not desired, consenter could
-	// simply return nil.
+	// WaitReady 阻塞等待共识者准备好接受新消息。
+	// 当共识者需要暂时阻止入口消息以便消耗在途消息时，这很有用。如果不需要此阻塞行为，共识者可以简单地返回nil。
 	WaitReady() error
 
-	// Errored returns a channel which will close when an error has occurred.
-	// This is especially useful for the Deliver client, who must terminate waiting
-	// clients when the consenter is not up to date.
+	// Errored 返回一个通道，当发生错误时将关闭。
+	// 这对于必须在共识者未及时更新时终止等待客户端的Deliver客户端尤其有用。
 	Errored() <-chan struct{}
 
-	// Start should allocate whatever resources are needed for staying up to date with the chain.
-	// Typically, this involves creating a thread which reads from the ordering source, passes those
-	// messages to a block cutter, and writes the resulting blocks to the ledger.
+	// Start 应分配资源以保持与链的最新状态。
+	// 通常，这涉及创建一个线程，从排序源读取消息，将这些消息传递给区块切割器，并将产生的区块写入账本。
 	Start()
 
-	// Halt frees the resources which were allocated for this Chain.
+	// Halt 释放为此Chain分配的资源。
 	Halt()
 }
 
-//go:generate counterfeiter -o mocks/mock_consenter_support.go . ConsenterSupport
-
-// ConsenterSupport provides the resources available to a Consenter implementation.
+// ConsenterSupport 提供给Consenter实现可用的资源接口。
 type ConsenterSupport interface {
-	identity.SignerSerializer
-	msgprocessor.Processor
+	identity.SignerSerializer // 签名和序列化接口
+	msgprocessor.Processor    // 消息处理器接口
 
-	// VerifyBlockSignature verifies a signature of a block with a given optional
-	// configuration (can be nil).
+	// VerifyBlockSignature 验证带有可选配置（可为nil）的区块签名。
 	VerifyBlockSignature([]*protoutil.SignedData, *cb.ConfigEnvelope) error
 
-	// BlockCutter returns the block cutting helper for this channel.
+	// BlockCutter 返回此通道的区块切割助手。
 	BlockCutter() blockcutter.Receiver
 
-	// SharedConfig provides the shared config from the channel's current config block.
+	// SharedConfig 提供来自通道当前配置块的共享配置。
 	SharedConfig() channelconfig.Orderer
 
-	// ChannelConfig provides the channel config from the channel's current config block.
+	// ChannelConfig 提供来自通道当前配置块的通道配置。
 	ChannelConfig() channelconfig.Channel
 
-	// CreateNextBlock takes a list of messages and creates the next block based on the block with highest block number committed to the ledger
-	// Note that either WriteBlock or WriteConfigBlock must be called before invoking this method a second time.
+	// CreateNextBlock 根据账本中最高块号的区块创建下一个区块。
+	// 注意，在第二次调用此方法之前，必须先调用WriteBlock或WriteConfigBlock。
 	CreateNextBlock(messages []*cb.Envelope) *cb.Block
 
-	// Block returns a block with the given number,
-	// or nil if such a block doesn't exist.
+	// Block 返回具有给定编号的区块，如果不存在这样的区块则返回nil。
 	Block(number uint64) *cb.Block
 
-	// WriteBlock commits a block to the ledger.
+	// WriteBlock 将区块提交到账本。
 	WriteBlock(block *cb.Block, encodedMetadataValue []byte)
 
-	// WriteConfigBlock commits a block to the ledger, and applies the config update inside.
+	// WriteConfigBlock 将区块提交到账本，并应用其中的配置更新。
 	WriteConfigBlock(block *cb.Block, encodedMetadataValue []byte)
 
-	// Sequence returns the current config sequence.
+	// Sequence 返回当前的配置序列号。
 	Sequence() uint64
 
-	// ChannelID returns the channel ID this support is associated with.
+	// ChannelID 返回与此支持关联的通道ID。
 	ChannelID() string
 
-	// Height returns the number of blocks in the chain this channel is associated with.
+	// Height 返回与此支持关联的链中的区块数量。
 	Height() uint64
 
-	// Append appends a new block to the ledger in its raw form,
-	// unlike WriteBlock that also mutates its metadata.
+	// Append 以原始形式将新块追加到账本中，
+	// 与同时修改其元数据的WriteBlock不同。
 	Append(block *cb.Block) error
 }
 
-// NoOpMetadataValidator implements a MetadataValidator that always returns nil error irrespecttive of the inputs.
+// NoOpMetadataValidator 实现了一个始终不考虑输入而返回nil错误的MetadataValidator。
 type NoOpMetadataValidator struct{}
 
-// ValidateConsensusMetadata determines the validity of a ConsensusMetadata update during config updates
-// on the channel, and it always returns nil error for the NoOpMetadataValidator implementation.
+// ValidateConsensusMetadata 在通道配置更新期间确定ConsensusMetadata更新的有效性，
+// 对于NoOpMetadataValidator实现，它始终返回nil错误。
 func (n NoOpMetadataValidator) ValidateConsensusMetadata(oldChannelConfig, newChannelConfig channelconfig.Orderer, newChannel bool) error {
 	return nil
 }

@@ -120,7 +120,8 @@ func (cs *ChainSupport) start() {
 	cs.Chain.Start()
 }
 
-// BlockCutter returns the blockcutter.Receiver instance for this channel.
+// BlockCutter 返回与此通道关联的 blockcutter.Receiver 实例。
+// blockcutter.Receiver 负责接收交易并将它们组织成批次，以便高效地组成区块。
 func (cs *ChainSupport) BlockCutter() blockcutter.Receiver {
 	return cs.cutter
 }

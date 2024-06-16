@@ -71,22 +71,25 @@ func CreateSystemChannelFilters(
 	return NewRuleSet(rules)
 }
 
-// ProcessNormalMsg handles normal messages, rejecting them if they are not bound for the system channel ID
-// with ErrChannelDoesNotExist.
+// ProcessNormalMsg 处理常规消息，如果消息并非发往系统通道ID，则以 ErrChannelDoesNotExist 错误拒绝处理。
 func (s *SystemChannel) ProcessNormalMsg(msg *cb.Envelope) (configSeq uint64, err error) {
+	// 解析消息中的通道ID
 	channelID, err := protoutil.ChannelID(msg)
 	if err != nil {
+		// 如果解析失败，则直接返回错误
 		return 0, err
 	}
 
-	// For the StandardChannel message processing, we would not check the channel ID,
-	// because the message processor is looked up by channel ID.
-	// However, the system channel message processor is the catch all for messages
-	// which do not correspond to an extant channel, so we must check it here.
+	// 对于标准通道（StandardChannel）的消息处理，我们通常无需检查通道ID，
+	// 因为消息处理器是按通道ID查找的。
+	// 但系统通道的消息处理器是捕获所有未对应现存通道消息的“兜底”，
+	// 因此我们必须在这里检查通道ID是否匹配。
 	if channelID != s.support.ChannelID() {
+		// 如果消息的通道ID与系统通道ID不一致，则返回通道不存在的错误
 		return 0, ErrChannelDoesNotExist
 	}
 
+	// 通道ID匹配，进一步调用标准通道处理器处理消息
 	return s.StandardChannel.ProcessNormalMsg(msg)
 }
 

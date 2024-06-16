@@ -52,23 +52,21 @@ const (
 	ConfigMsg
 )
 
-// Processor provides the methods necessary to classify and process any message which
-// arrives through the Broadcast interface.
+// Processor 提供了一组方法，这些方法对于通过Broadcast接口接收的任何消息进行分类和处理都是必需的。
 type Processor interface {
-	// ClassifyMsg inspects the message header to determine which type of processing is necessary
+
+	// ClassifyMsg 检查消息头以确定需要进行哪种类型的处理
 	ClassifyMsg(chdr *cb.ChannelHeader) Classification
 
-	// ProcessNormalMsg will check the validity of a message based on the current configuration.  It returns the current
-	// configuration sequence number and nil on success, or an error if the message is not valid
+	// ProcessNormalMsg 将根据当前配置检查消息的有效性。成功时返回当前配置的序列号和nil，如果消息无效则返回错误。
 	ProcessNormalMsg(env *cb.Envelope) (configSeq uint64, err error)
 
-	// ProcessConfigUpdateMsg will attempt to apply the config update to the current configuration, and if successful
-	// return the resulting config message and the configSeq the config was computed from.  If the config update message
-	// is invalid, an error is returned.
+	// ProcessConfigUpdateMsg 尝试将配置更新应用到当前配置中，如果成功则返回生成的配置消息及用于计算此配置的配置序列号。
+	// 如果配置更新消息无效，则返回错误。
 	ProcessConfigUpdateMsg(env *cb.Envelope) (config *cb.Envelope, configSeq uint64, err error)
 
-	// ProcessConfigMsg takes message of type `ORDERER_TX` or `CONFIG`, unpack the ConfigUpdate envelope embedded
-	// in it, and call `ProcessConfigUpdateMsg` to produce new Config message of the same type as original message.
-	// This method is used to re-validate and reproduce config message, if it's deemed not to be valid anymore.
+	// ProcessConfigMsg 接收类型为`ORDERER_TX`或`CONFIG`的消息，解包其中嵌入的ConfigUpdate信封，
+	// 然后调用`ProcessConfigUpdateMsg`以生成与原始消息相同类型的新配置消息。
+	// 当原先的消息被认为不再有效时，使用此方法重新验证并重新生成配置消息。
 	ProcessConfigMsg(env *cb.Envelope) (*cb.Envelope, uint64, error)
 }

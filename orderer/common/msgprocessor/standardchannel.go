@@ -94,21 +94,25 @@ func (s *StandardChannel) ClassifyMsg(chdr *cb.ChannelHeader) Classification {
 	}
 }
 
-// ProcessNormalMsg will check the validity of a message based on the current configuration.  It returns the current
-// configuration sequence number and nil on success, or an error if the message is not valid
+// ProcessNormalMsg 根据当前配置检查消息的有效性。在成功时，它将返回当前配置的序列号和nil；如果消息无效，则返回错误。
 func (s *StandardChannel) ProcessNormalMsg(env *cb.Envelope) (configSeq uint64, err error) {
+	// 尝试从支持组件中获取排序服务的配置信息
 	oc, ok := s.support.OrdererConfig()
+	// 如果没有找到排序服务配置，则触发恐慌，因为这是运行的基本前提
 	if !ok {
-		logger.Panicf("Missing orderer config")
+		logger.Panicf("缺少排序器配置")
 	}
+	// 检查是否启用了共识类型迁移的能力
 	if oc.Capabilities().ConsensusTypeMigration() {
+		// 如果当前共识状态不是正常状态，则拒绝处理常规交易，并返回维护模式错误
 		if oc.ConsensusState() != orderer.ConsensusType_STATE_NORMAL {
-			return 0, errors.WithMessage(
-				ErrMaintenanceMode, "normal transactions are rejected")
+			return 0, errors.WithMessage(ErrMaintenanceMode, "在维护模式下，拒绝常规交易")
 		}
 	}
 
+	// 获取当前的配置序列号
 	configSeq = s.support.Sequence()
+	// 应用过滤器链，进一步检查消息的有效性
 	err = s.filters.Apply(env)
 	return
 }
