@@ -47,12 +47,18 @@ func init() {
 	}()
 }
 
-// eventLogger adapts a Logger to the sarama.Logger interface.
-// Additionally, listeners can be registered to be notified when a substring has
-// been logged.
+// 适配器将普通的Logger接口转换为sarama.Logger接口。
+// 更进一步，它允许注册监听器，当包含特定子字符串的日志被记录时，
+// 这些监听器将会被通知。
 type eventLogger interface {
+	// 继承sarama.StdLogger接口的标准日志记录方法
 	sarama.StdLogger
+
+	// NewListener 注册一个新的监听器，该监听器会在包含指定子字符串的日志条目被记录时接收通知。
+	// 返回一个用于接收匹配日志通知的通道。
 	NewListener(substr string) <-chan string
+
+	// RemoveListener 移除之前注册的监听器，不再接收与指定子字符串匹配的日志通知。
 	RemoveListener(substr string, listener <-chan string)
 }
 

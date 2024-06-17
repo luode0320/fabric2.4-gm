@@ -143,11 +143,16 @@ type Retry struct {
 	Consumer        Consumer
 }
 
-// NetworkTimeouts contains the socket timeouts for network requests to the
-// Kafka cluster.
+// NetworkTimeouts 包含了针对Kafka集群的网络请求的套接字超时设置。
+// 这些超时设置分别应用于建立连接、读取数据和写入数据的操作。
 type NetworkTimeouts struct {
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
+	// DialTimeout 指定建立到Kafka代理的初始连接时的超时时间。
+	DialTimeout time.Duration
+
+	// ReadTimeout 设定了等待Kafka代理响应的读取操作超时时间。
+	ReadTimeout time.Duration
+
+	// WriteTimeout 定义了向Kafka代理发送数据的写入操作超时时间。
 	WriteTimeout time.Duration
 }
 

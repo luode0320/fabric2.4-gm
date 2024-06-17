@@ -138,7 +138,7 @@ type chainImpl struct {
 	// 表示当前链的kafka的相关信息, 包括主题和分区名称等。
 	channel channel
 
-	// 记录了最后一次持久化消息的偏移量。
+	// 记录了kafka最后一次持久化消息的偏移量, 下一次将从 lastOffsetPersisted + 1 的偏移量开始消费。
 	lastOffsetPersisted int64
 
 	// 记录了最后一次处理的原始消息偏移量。
@@ -177,10 +177,10 @@ type chainImpl struct {
 	// 接收到停止请求时关闭，一旦关闭将触发消息处理循环的退出，且不会再打开。
 	haltChan chan struct{}
 
-	// timer 控制将待处理消息打包进区块的批处理超时时间。
+	// 控制将待处理消息打包进区块的批处理超时时间。
 	timer <-chan time.Time
 
-	// replicaIDs 列出了该链的副本ID列表，与Kafka分区对应。
+	// 列出了该链的副本ID列表，与Kafka分区对应。
 	replicaIDs []int32
 }
 
@@ -229,20 +229,20 @@ func startThread(chain *chainImpl) {
 	}
 	logger.Infof("[通道: %s] 生产者设置成功", chain.ChannelID())
 
-	// 使用生产者发送CONNECT消息
+	// 使用生产者发送CONNECT消息, 通常用于健康检查或维持与Kafka服务器的活跃连接状态。
 	if err = sendConnectMessage(chain.consenter.retryOptions(), chain.haltChan, chain.producer, chain.channel); err != nil {
 		logger.Panicf("[通道: %s] 无法发送CONNECT消息 = %s", chain.channel.topic(), err)
 	}
 	logger.Infof("[通道: %s] CONNECT消息发送成功", chain.channel.topic())
 
-	// 初始化父级消费者
+	// 初始化父级消费者, (先创建一个消费者的连接, 但是不指定连接到哪个主题和分区, 后面动态创建)
 	chain.parentConsumer, err = setupParentConsumerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.channel)
 	if err != nil {
 		logger.Panicf("[通道: %s] 无法设置父级消费者 = %s", chain.channel.topic(), err)
 	}
 	logger.Infof("[通道: %s] 父级消费者设置成功", chain.channel.topic())
 
-	// 初始化通道消费者
+	// 初始化通道分区消费者
 	chain.channelConsumer, err = setupChannelConsumerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.parentConsumer, chain.channel, chain.lastOffsetPersisted+1)
 	if err != nil {
 		logger.Panicf("[通道: %s] 无法设置通道消费者 = %s", chain.channel.topic(), err)
@@ -255,13 +255,13 @@ func startThread(chain *chainImpl) {
 		logger.Panicf("[通道: %s] 获取副本ID失败 = %s", chain.channel.topic(), err)
 	}
 
-	// 初始化doneProcessingMessagesToBlocks通道
+	// 初始化doneProcessingMessagesToBlocks(已完成将消息处理到块)通道
 	chain.doneProcessingMessagesToBlocks = make(chan struct{})
 
-	// 初始化errorChan通道，用于Deliver请求的错误传递
+	// 初始化errorChan通道，用于响应请求的错误传递
 	chain.errorChan = make(chan struct{})
 
-	// 关闭startChan，允许Broadcast请求通过
+	// 关闭startChan, 表示启动完成, 允许Broadcast请求通过
 	close(chain.startChan)
 
 	logger.Infof("[通道: %s] 启动阶段完成成功", chain.channel.topic())
@@ -446,155 +446,158 @@ func (chain *chainImpl) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// processMessagesToBlocks drains the Kafka consumer for the given channel, and
-// takes care of converting the stream of ordered messages into blocks for the
-// channel's ledger.
+// 负责消耗指定通道的Kafka消费者中的消息，并将有序消息流转换为通道账本的区块。
+// 返回:
+//   - []uint64: 各类操作的计数统计。
+//   - error: 在处理消息到区块过程中遇到的错误。
 func (chain *chainImpl) processMessagesToBlocks() ([]uint64, error) {
-	counts := make([]uint64, 11) // For metrics and tests
+	counts := make([]uint64, 11) // 用于指标和测试的计数器
 	msg := new(ab.KafkaMessage)
 
 	defer func() {
-		// notify that we are not processing messages to blocks
+		// 标记不再处理消息至区块
 		close(chain.doneProcessingMessagesToBlocks)
 	}()
 
-	defer func() { // When Halt() is called
+	defer func() {
+		// 当调用Halt()时
 		select {
-		case <-chain.errorChan: // If already closed, don't do anything
+		case <-chain.errorChan: // 如果已经关闭，不做处理
 		default:
 			close(chain.errorChan)
 		}
 	}()
 
-	subscription := fmt.Sprintf("added subscription to %s/%d", chain.channel.topic(), chain.channel.partition())
-	var topicPartitionSubscriptionResumed <-chan string
-	var deliverSessionTimer *time.Timer
-	var deliverSessionTimedOut <-chan time.Time
+	// 订阅消息的标识符
+	subscription := fmt.Sprintf("向%s/%d添加了订阅", chain.channel.topic(), chain.channel.partition())
+	var topicPartitionSubscriptionResumed <-chan string // 订阅恢复的通知通道
+	var deliverSessionTimer *time.Timer                 // 会话超时定时器
+	var deliverSessionTimedOut <-chan time.Time         // 会话超时事件通道
 
 	for {
 		select {
 		case <-chain.haltChan:
-			logger.Warningf("[channel: %s] Consenter for channel exiting", chain.ChannelID())
+			logger.Warningf("[通道: %s] 通道的共识器退出", chain.ChannelID())
 			counts[indexExitChanPass]++
 			return counts, nil
-		case kafkaErr := <-chain.channelConsumer.Errors():
-			logger.Errorf("[channel: %s] Error during consumption: %s", chain.ChannelID(), kafkaErr)
-			counts[indexRecvError]++
-			select {
-			case <-chain.errorChan: // If already closed, don't do anything
-			default:
 
+		// kafka消费错误
+		case kafkaErr := <-chain.channelConsumer.Errors():
+			logger.Errorf("[通道: %s] 消费过程中发生错误: %s", chain.ChannelID(), kafkaErr)
+			counts[indexRecvError]++
+
+			select {
+			case <-chain.errorChan: // 如果已关闭，不做处理
+			default:
 				switch kafkaErr.Err {
+				// 对于除ErrOffsetOutOfRange(Err偏移超出范围)之外的所有错误，Kafka消费者会自动重试
 				case sarama.ErrOffsetOutOfRange:
-					// the kafka consumer will auto retry for all errors except for ErrOffsetOutOfRange
-					logger.Errorf("[channel: %s] Unrecoverable error during consumption: %s", chain.ChannelID(), kafkaErr)
+					logger.Errorf("[通道: %s] 消费过程中发生不可恢复的错误: %s", chain.ChannelID(), kafkaErr)
 					close(chain.errorChan)
 				default:
 					if topicPartitionSubscriptionResumed == nil {
-						// register listener
+						// 注册监听器
 						topicPartitionSubscriptionResumed = saramaLogger.NewListener(subscription)
-						// start session timout timer
+						// 启动会话超时计时器
 						deliverSessionTimer = time.NewTimer(chain.consenter.retryOptions().NetworkTimeouts.ReadTimeout)
 						deliverSessionTimedOut = deliverSessionTimer.C
 					}
 				}
 			}
-			select {
-			case <-chain.errorChan: // we are not ignoring the error
-				logger.Warningf("[channel: %s] Closed the errorChan", chain.ChannelID())
-				// This covers the edge case where (1) a consumption error has
-				// closed the errorChan and thus rendered the chain unavailable to
-				// deliver clients, (2) we're already at the newest offset, and (3)
-				// there are no new Broadcast requests coming in. In this case,
-				// there is no trigger that can recreate the errorChan again and
-				// mark the chain as available, so we have to force that trigger via
-				// the emission of a CONNECT message. TODO Consider rate limiting
-				go sendConnectMessage(chain.consenter.retryOptions(), chain.haltChan, chain.producer, chain.channel)
-			default: // we are ignoring the error
-				logger.Warningf("[channel: %s] Deliver sessions will be dropped if consumption errors continue.", chain.ChannelID())
-			}
-		case <-topicPartitionSubscriptionResumed:
-			// stop listening for subscription message
-			saramaLogger.RemoveListener(subscription, topicPartitionSubscriptionResumed)
-			// disable subscription event chan
-			topicPartitionSubscriptionResumed = nil
 
-			// stop timeout timer
+			select {
+			case <-chain.errorChan: // 不再忽略错误
+				logger.Warningf("[通道: %s] 关闭了errorChan", chain.ChannelID())
+				// 使用给定的重试选项向通道发送一个CONNECT消息。通常用于健康检查或维持与Kafka服务器的活跃连接状态。
+				go sendConnectMessage(chain.consenter.retryOptions(), chain.haltChan, chain.producer, chain.channel)
+			default: // 忽略错误
+				logger.Warningf("[通道: %s] 若消费错误持续，传递会话将被丢弃。", chain.ChannelID())
+			}
+
+		// 订阅恢复的通知通道
+		case <-topicPartitionSubscriptionResumed:
+			// 停止监听订阅消息
+			saramaLogger.RemoveListener(subscription, topicPartitionSubscriptionResumed)
+			// 禁用订阅事件通道
+			topicPartitionSubscriptionResumed = nil
+			// 停止超时计时器
 			if !deliverSessionTimer.Stop() {
 				<-deliverSessionTimer.C
 			}
-			logger.Warningf("[channel: %s] Consumption will resume.", chain.ChannelID())
+			logger.Warningf("[通道: %s] 消费将继续。", chain.ChannelID())
 
+		// 同上，处理会话超时
 		case <-deliverSessionTimedOut:
-			// stop listening for subscription message
 			saramaLogger.RemoveListener(subscription, topicPartitionSubscriptionResumed)
-			// disable subscription event chan
 			topicPartitionSubscriptionResumed = nil
-
 			close(chain.errorChan)
-			logger.Warningf("[channel: %s] Closed the errorChan", chain.ChannelID())
-
-			// make chain available again via CONNECT message trigger
+			logger.Warningf("[通道: %s] 关闭了errorChan", chain.ChannelID())
+			// 使用给定的重试选项向通道发送一个CONNECT消息。通常用于健康检查或维持与Kafka服务器的活跃连接状态。
 			go sendConnectMessage(chain.consenter.retryOptions(), chain.haltChan, chain.producer, chain.channel)
 
 		case in, ok := <-chain.channelConsumer.Messages():
 			if !ok {
-				logger.Criticalf("[channel: %s] Kafka consumer closed.", chain.ChannelID())
+				logger.Criticalf("[通道: %s] Kafka消费者已关闭。", chain.ChannelID())
 				return counts, nil
 			}
-
-			// catch the possibility that we missed a topic subscription event before
-			// we registered the event listener
+			// 检查是否错过订阅事件
 			if topicPartitionSubscriptionResumed != nil {
-				// stop listening for subscription message
 				saramaLogger.RemoveListener(subscription, topicPartitionSubscriptionResumed)
-				// disable subscription event chan
 				topicPartitionSubscriptionResumed = nil
-				// stop timeout timer
 				if !deliverSessionTimer.Stop() {
 					<-deliverSessionTimer.C
 				}
 			}
 
 			select {
-			case <-chain.errorChan: // If this channel was closed...
-				chain.errorChan = make(chan struct{}) // ...make a new one.
-				logger.Infof("[channel: %s] Marked consenter as available again", chain.ChannelID())
+			case <-chain.errorChan:
+				chain.errorChan = make(chan struct{})
+				logger.Infof("[通道: %s] 标记共识器再次可用", chain.ChannelID())
 			default:
 			}
+
+			// 解码消息
 			if err := proto.Unmarshal(in.Value, msg); err != nil {
-				// This shouldn't happen, it should be filtered at ingress
-				logger.Criticalf("[channel: %s] Unable to unmarshal consumed message = %s", chain.ChannelID(), err)
+				logger.Criticalf("[通道: %s] 无法解码消费的消息 = %s", chain.ChannelID(), err)
 				counts[indexUnmarshalError]++
 				continue
 			} else {
-				logger.Debugf("[channel: %s] Successfully unmarshalled consumed message, offset is %d. Inspecting type...", chain.ChannelID(), in.Offset)
+				logger.Debugf("[通道: %s] 成功解码消费的消息，偏移量为%d。检查类型...", chain.ChannelID(), in.Offset)
 				counts[indexRecvPass]++
 			}
+
+			// 根据消息类型处理
 			switch msg.Type.(type) {
+			// 成功处理Connect类型消息
 			case *ab.KafkaMessage_Connect:
 				_ = chain.processConnect(chain.ChannelID())
 				counts[indexProcessConnectPass]++
+
+			// 在判断是否需要切割区块时发生错误
 			case *ab.KafkaMessage_TimeToCut:
+				// 处理接收到的时间切分（TimeToCut）消息，根据消息指示切割区块。
 				if err := chain.processTimeToCut(msg.GetTimeToCut(), in.Offset); err != nil {
-					logger.Warningf("[channel: %s] %s", chain.ChannelID(), err)
-					logger.Criticalf("[channel: %s] Consenter for channel exiting", chain.ChannelID())
+					logger.Warningf("[通道: %s] %s", chain.ChannelID(), err)
+					logger.Criticalf("[通道: %s] 通道的共识器退出", chain.ChannelID())
 					counts[indexProcessTimeToCutError]++
-					return counts, err // TODO Revisit whether we should indeed stop processing the chain at this point
+					return counts, err
 				}
 				counts[indexProcessTimeToCutPass]++
+
+			// 处理kafka普通消息
 			case *ab.KafkaMessage_Regular:
 				if err := chain.processRegular(msg.GetRegular(), in.Offset); err != nil {
-					logger.Warningf("[channel: %s] Error when processing incoming message of type REGULAR = %s", chain.ChannelID(), err)
+					logger.Warningf("[通道: %s] 处理类型为REGULAR的传入消息时发生错误 = %s", chain.ChannelID(), err)
 					counts[indexProcessRegularError]++
 				} else {
 					counts[indexProcessRegularPass]++
 				}
 			}
+
+		// 发送时间切分消息
 		case <-chain.timer:
 			if err := sendTimeToCut(chain.producer, chain.channel, chain.lastCutBlockNumber+1, &chain.timer); err != nil {
-				logger.Errorf("[channel: %s] cannot post time-to-cut message = %s", chain.ChannelID(), err)
-				// Do not return though
+				logger.Errorf("[通道: %s] 无法发布时间切分消息 = %s", chain.ChannelID(), err)
 				counts[indexSendTimeToCutError]++
 			} else {
 				counts[indexSendTimeToCutPass]++
@@ -635,8 +638,18 @@ func (chain *chainImpl) closeKafkaObjects() []error {
 
 // Helper functions
 
+// 根据区块链高度计算上一个已切割区块的高度。
+// 参数:
+//   - blockchainHeight: 当前区块链的整体高度，即已包含所有区块的总数。
+//
+// 返回:
+//   - uint64: 表示上一个被切割并添加到区块链上的区块的高度。
+//
+// 说明:
+//   - 该函数简单地从当前区块链高度中减去1，因为最新的高度代表的是最新添加的区块，
+//     而上一个被确认的区块则是高度减一的那个。
 func getLastCutBlockNumber(blockchainHeight uint64) uint64 {
-	return blockchainHeight - 1
+	return blockchainHeight - 1 // 上一个切割区块的高度等于总高度减一
 }
 
 // getOffsets 函数用于从给定的元数据值中提取不同的偏移量信息。
@@ -734,11 +747,21 @@ func newConfigMessage(config []byte, configSeq uint64, originalOffset int64) *ab
 	}
 }
 
+// 创建一个新的KafkaMessage，用于指示时间切分事件。
+// 参数:
+//   - blockNumber: 即将进行时间切分的区块编号。
+//
+// 返回:
+//   - *ab.KafkaMessage: 一个指向KafkaMessage结构体的指针，该消息类型设置为TimeToCut，
+//     并包含了指定区块编号的详细时间切分信息。
 func newTimeToCutMessage(blockNumber uint64) *ab.KafkaMessage {
+	// 初始化并返回一个KafkaMessage实例，
+	// 其中Type字段被设置为一个TimeToCut消息，
+	// 包含了待切块的区块编号。
 	return &ab.KafkaMessage{
 		Type: &ab.KafkaMessage_TimeToCut{
 			TimeToCut: &ab.KafkaMessageTimeToCut{
-				BlockNumber: blockNumber,
+				BlockNumber: blockNumber, // 设置区块编号
 			},
 		},
 	}
@@ -765,59 +788,82 @@ func newProducerMessage(channel channel, pld []byte) *sarama.ProducerMessage {
 	}
 }
 
+// 处理接收到的连接消息。
+// 参数:
+//   - channelName: 字符串，表示与消息关联的通道名称。
+//
+// 功能:
+//   - 当前函数会记录一条调试日志，表明收到了一个连接消息，
+//     并且说明对于这种类型的消息，当前实现选择忽略它。
+//
+// 返回:
+//   - error: 函数总是返回nil，表示处理过程没有遇到错误。
 func (chain *chainImpl) processConnect(channelName string) error {
-	logger.Debugf("[channel: %s] It's a connect message - ignoring", channelName)
+	// 记录调试日志，说明收到连接消息并决定忽略
+	logger.Debugf("[channel: %s] 收到连接消息 - 将其忽略", channelName)
+
+	// 因为这里对连接消息不做具体处理，直接返回无错误
 	return nil
 }
 
+// 处理常规类型的消息，这些消息通常包含事务数据。
+// 参数:
+//   - regularMessage: 指向常规Kafka消息的指针，包含交易信封。
+//   - receivedOffset: 消息在Kafka主题中的原始偏移量。
+//
+// 功能:
+//   - 根据传入的规则更新`lastOriginalOffsetProcessed`。
+//   - 使用BlockCutter对消息进行排序，判断是否需要切割新的区块。
+//   - 管理区块切割定时器，依据是否有待处理消息启动或停止定时器。
+//   - 分别处理切割单个区块和两个区块的情况，确保偏移量的正确更新和存储。
+//   - 调用CreateNextBlock和WriteBlock方法来创建新区块，并附加上相应的Kafka元数据。
 func (chain *chainImpl) processRegular(regularMessage *ab.KafkaMessageRegular, receivedOffset int64) error {
-	// When committing a normal message, we also update `lastOriginalOffsetProcessed` with `newOffset`.
-	// It is caller's responsibility to deduce correct value of `newOffset` based on following rules:
-	// - if Resubmission is switched off, it should always be zero
-	// - if the message is committed on first pass, meaning it's not re-validated and re-ordered, this value
-	//   should be the same as current `lastOriginalOffsetProcessed`
-	// - if the message is re-validated and re-ordered, this value should be the `OriginalOffset` of that
-	//   Kafka message, so that `lastOriginalOffsetProcessed` is advanced
-	commitNormalMsg := func(message *cb.Envelope, newOffset int64) {
-		batches, pending := chain.BlockCutter().Ordered(message)
-		logger.Debugf("[channel: %s] Ordering results: items in batch = %d, pending = %v", chain.ChannelID(), len(batches), pending)
+	// 当提交普通消息时，我们也会用 'newOffset' 更新 'lastoriignaloffsetprocessed'。
+	// 调用者有责任根据以下规则推断 “newoffset” 的正确值:
+	// -如果关闭重新提交，则应始终为零
+	// -如果消息在第一遍提交，这意味着它没有重新验证和重新排序，这个值
+	// 应与当前的 'lestoriginaloffsetprocessed' 相同
+	// -如果消息经过重新验证和重新排序，则此值应为该消息的 “originaloffset”
+	// Kafka消息，因此 'lastoriiinaloffsetprocessed' 是高级的
 
+	// 定义一个内部函数用于提交普通消息并处理偏移量更新
+	commitNormalMsg := func(message *cb.Envelope, newOffset int64) {
+		// 使用BlockCutter对消息进行排序，返回当前批次和是否还有剩余未处理消息
+		batches, pending := chain.BlockCutter().Ordered(message)
+		logger.Debugf("[通道: %s] 排序结果：批次内项目数量 = %d，待处理 = %v", chain.ChannelID(), len(batches), pending)
+
+		// 根据定时器状态和待处理消息情况调整定时器
 		switch {
 		case chain.timer != nil && !pending:
-			// Timer is already running but there are no messages pending, stop the timer
+			// 定时器正在运行且没有待处理消息，停止定时器
 			chain.timer = nil
 		case chain.timer == nil && pending:
-			// Timer is not already running and there are messages pending, so start it
+			// 无运行定时器且有待处理消息，启动定时器(到达时间之后, 发送切割区块高度的消息到kafka, 然后kafka消费入块)
 			chain.timer = time.After(chain.SharedConfig().BatchTimeout())
-			logger.Debugf("[channel: %s] Just began %s batch timer", chain.ChannelID(), chain.SharedConfig().BatchTimeout().String())
+			logger.Debugf("[通道: %s] 开始了 %s 批次超时定时器", chain.ChannelID(), chain.SharedConfig().BatchTimeout().String())
 		default:
-			// Do nothing when:
-			// 1. Timer is already running and there are messages pending
-			// 2. Timer is not set and there are no messages pending
+			// 什么都不做的时候:
+			// 1. 计时器已在运行，并且有消息挂起
+			// 2. 未设置计时器，并且没有挂起的消息
 		}
 
+		// 如果没有切割新的区块，仅更新偏移量和处理定时器
 		if len(batches) == 0 {
-			// If no block is cut, we update the `lastOriginalOffsetProcessed`, start the timer if necessary and return
 			chain.lastOriginalOffsetProcessed = newOffset
 			return
 		}
 
-		offset := receivedOffset
+		// 计算LastOffsetPersisted的值，考虑新消息是否被包含在第一个批次中
+		var offset int64
 		if pending || len(batches) == 2 {
-			// If the newest envelope is not encapsulated into the first batch,
-			// the `LastOffsetPersisted` should be `receivedOffset` - 1.
-			offset--
+			offset = receivedOffset - 1
 		} else {
-			// We are just cutting exactly one block, so it is safe to update
-			// `lastOriginalOffsetProcessed` with `newOffset` here, and then
-			// encapsulate it into this block. Otherwise, if we are cutting two
-			// blocks, the first one should use current `lastOriginalOffsetProcessed`
-			// and the second one should use `newOffset`, which is also used to
-			// update `lastOriginalOffsetProcessed`
+			// 单独切割一个区块，可以安全更新偏移量
 			chain.lastOriginalOffsetProcessed = newOffset
+			offset = receivedOffset
 		}
 
-		// Commit the first block
+		// 切割并处理第一个区块
 		block := chain.CreateNextBlock(batches[0])
 		metadata := &ab.KafkaMetadata{
 			LastOffsetPersisted:         offset,
@@ -826,58 +872,67 @@ func (chain *chainImpl) processRegular(regularMessage *ab.KafkaMessageRegular, r
 		}
 		chain.WriteBlock(block, metadata)
 		chain.lastCutBlockNumber++
-		logger.Debugf("[channel: %s] Batch filled, just cut block [%d] - last persisted offset is now %d", chain.ChannelID(), chain.lastCutBlockNumber, offset)
+		logger.Debugf("[通道: %s] 批次已满，切割区块 [%d] - 最后持久化的偏移量现在为 %d", chain.ChannelID(), chain.lastCutBlockNumber, offset)
 
-		// Commit the second block if exists
+		// 如果存在第二个批次，继续处理并切割第二个区块
 		if len(batches) == 2 {
 			chain.lastOriginalOffsetProcessed = newOffset
 			offset++
 
 			block := chain.CreateNextBlock(batches[1])
-			metadata := &ab.KafkaMetadata{
+			metadata = &ab.KafkaMetadata{
 				LastOffsetPersisted:         offset,
 				LastOriginalOffsetProcessed: newOffset,
 				LastResubmittedConfigOffset: chain.lastResubmittedConfigOffset,
 			}
 			chain.WriteBlock(block, metadata)
 			chain.lastCutBlockNumber++
-			logger.Debugf("[channel: %s] Batch filled, just cut block [%d] - last persisted offset is now %d", chain.ChannelID(), chain.lastCutBlockNumber, offset)
+			logger.Debugf("[通道: %s] 批次已满，切割区块 [%d] - 最后持久化的偏移量现在为 %d", chain.ChannelID(), chain.lastCutBlockNumber, offset)
 		}
 	}
 
-	// When committing a config message, we also update `lastOriginalOffsetProcessed` with `newOffset`.
-	// It is caller's responsibility to deduce correct value of `newOffset` based on following rules:
-	// - if Resubmission is switched off, it should always be zero
-	// - if the message is committed on first pass, meaning it's not re-validated and re-ordered, this value
-	//   should be the same as current `lastOriginalOffsetProcessed`
-	// - if the message is re-validated and re-ordered, this value should be the `OriginalOffset` of that
-	//   Kafka message, so that `lastOriginalOffsetProcessed` is advanced
+	// 当提交配置消息时，我们同时使用`newOffset`更新`lastOriginalOffsetProcessed`。
+	// 调用者需根据以下规则推断出正确的`newOffset`值：
+	// - 如果重提交功能关闭，则`newOffset`应始终为零。
+	// - 如果消息在初次传递时被提交，即未经重新验证和重新排序，`newOffset`的值应与当前`lastOriginalOffsetProcessed`相同。
+	// - 如果消息经过了重新验证和重新排序，`newOffset`应当是那个Kafka消息的`OriginalOffset`，这样可以推进`lastOriginalOffsetProcessed`的值。
 	commitConfigMsg := func(message *cb.Envelope, newOffset int64) {
-		logger.Debugf("[channel: %s] Received config message", chain.ChannelID())
+		// 记录日志，表明接收到配置消息
+		logger.Debugf("[channel: %s] 收到配置消息", chain.ChannelID())
+		// 切割挂起的消息到一个批次中（如果有）
 		batch := chain.BlockCutter().Cut()
 
 		if batch != nil {
-			logger.Debugf("[channel: %s] Cut pending messages into block", chain.ChannelID())
+			// 如果有挂起消息被切割，记录日志并创建新区块包含这些消息
+			logger.Debugf("[channel: %s] 将待处理消息切割成区块", chain.ChannelID())
 			block := chain.CreateNextBlock(batch)
+			// 为刚创建的区块设置元数据并写入
 			metadata := &ab.KafkaMetadata{
-				LastOffsetPersisted:         receivedOffset - 1,
+				LastOffsetPersisted:         receivedOffset - 1, // 注意：偏移量减一，因当前消息还未计入
 				LastOriginalOffsetProcessed: chain.lastOriginalOffsetProcessed,
 				LastResubmittedConfigOffset: chain.lastResubmittedConfigOffset,
 			}
 			chain.WriteBlock(block, metadata)
+			// 更新最近切割的区块号
 			chain.lastCutBlockNumber++
 		}
 
-		logger.Debugf("[channel: %s] Creating isolated block for config message", chain.ChannelID())
+		// 记录日志，准备为配置消息创建独立的区块
+		logger.Debugf("[channel: %s] 为配置消息创建独立区块", chain.ChannelID())
+		// 更新`lastOriginalOffsetProcessed`为新的偏移量
 		chain.lastOriginalOffsetProcessed = newOffset
+		// 创建仅包含当前配置消息的新区块
 		block := chain.CreateNextBlock([]*cb.Envelope{message})
+		// 为配置区块设置元数据并写入
 		metadata := &ab.KafkaMetadata{
-			LastOffsetPersisted:         receivedOffset,
+			LastOffsetPersisted:         receivedOffset, // 当前消息的偏移量已被持久化
 			LastOriginalOffsetProcessed: chain.lastOriginalOffsetProcessed,
 			LastResubmittedConfigOffset: chain.lastResubmittedConfigOffset,
 		}
 		chain.WriteConfigBlock(block, metadata)
+		// 增加最近切割的区块号
 		chain.lastCutBlockNumber++
+		// 将定时器重置为nil，表示当前操作无需等待更多操作
 		chain.timer = nil
 	}
 
@@ -1062,126 +1117,225 @@ func (chain *chainImpl) processRegular(regularMessage *ab.KafkaMessageRegular, r
 	return nil
 }
 
+// 处理接收到的时间切分（TimeToCut）消息，根据消息指示切割区块。
 func (chain *chainImpl) processTimeToCut(ttcMessage *ab.KafkaMessageTimeToCut, receivedOffset int64) error {
 	ttcNumber := ttcMessage.GetBlockNumber()
-	logger.Debugf("[channel: %s] It's a time-to-cut message for block [%d]", chain.ChannelID(), ttcNumber)
+	logger.Debugf("[通道: %s] 收到一个切块时间消息，对应区块[%d]", chain.ChannelID(), ttcNumber)
 	if ttcNumber == chain.lastCutBlockNumber+1 {
+		// 清除计时器，因为正确的时间切分指令已到达
 		chain.timer = nil
-		logger.Debugf("[channel: %s] Nil'd the timer", chain.ChannelID())
+		logger.Debugf("[通道: %s] 计时器已清空", chain.ChannelID())
+		// 使用BlockCutter切割批次
 		batch := chain.BlockCutter().Cut()
 		if len(batch) == 0 {
-			return fmt.Errorf("got right time-to-cut message (for block [%d]),"+
-				" no pending requests though; this might indicate a bug", chain.lastCutBlockNumber+1)
+			// 没有待处理请求时收到切块指令，可能表明存在错误
+			return fmt.Errorf("收到了正确的时间切分消息（对应区块[%d]），但没有待处理的请求；这可能意味着存在错误", chain.lastCutBlockNumber+1)
 		}
+		// 创建新区块
 		block := chain.CreateNextBlock(batch)
+		// 准备Kafka元数据
 		metadata := &ab.KafkaMetadata{
 			LastOffsetPersisted:         receivedOffset,
 			LastOriginalOffsetProcessed: chain.lastOriginalOffsetProcessed,
 		}
+		// 写入新区块并更新元数据
 		chain.WriteBlock(block, metadata)
+		// 更新最后切割的区块号
 		chain.lastCutBlockNumber++
-		logger.Debugf("[channel: %s] Proper time-to-cut received, just cut block [%d]", chain.ChannelID(), chain.lastCutBlockNumber)
+		logger.Debugf("[通道: %s] 正确的时间切分已接收，已切割区块[%d]", chain.ChannelID(), chain.lastCutBlockNumber)
 		return nil
 	} else if ttcNumber > chain.lastCutBlockNumber+1 {
-		return fmt.Errorf("got larger time-to-cut message (%d) than allowed/expected (%d)"+
-			" - this might indicate a bug", ttcNumber, chain.lastCutBlockNumber+1)
+		// 收到未来时间切分消息，可能指示错误
+		return fmt.Errorf("收到的时间切分消息过大（%d），超过允许或预期的范围（%d）；这可能意味着存在错误", ttcNumber, chain.lastCutBlockNumber+1)
 	}
-	logger.Debugf("[channel: %s] Ignoring stale time-to-cut-message for block [%d]", chain.ChannelID(), ttcNumber)
+
+	// 忽略过时的时间切分消息
+	logger.Debugf("[通道: %s] 忽略过时的时间切分消息，对应区块[%d]", chain.ChannelID(), ttcNumber)
 	return nil
 }
 
-// WriteBlock acts as a wrapper around the consenter support WriteBlock, encoding the metadata,
-// and updating the metrics.
+// WriteBlock 作为对 consenter 支持的 WriteBlock 方法的一个包装器，该方法负责编码元数据，
+// 并更新度量指标。
+// 参数:
+//   - block: 指向要写入的区块链块的指针。
+//   - metadata: 指向Kafka元数据的指针，包含诸如最后持久化偏移量等信息。
+//
+// 功能:
+//   - 首先，使用 protoutil 库将元数据编码为字节流。
+//   - 然后，调用底层 consenter 支持的 WriteBlock 方法，将区块及编码后的元数据写入区块链。
+//   - 最后，更新与通道相关的指标，记录最后持久化的偏移量，用于监控和跟踪。
 func (chain *chainImpl) WriteBlock(block *cb.Block, metadata *ab.KafkaMetadata) {
 	chain.ConsenterSupport.WriteBlock(block, protoutil.MarshalOrPanic(metadata))
 	chain.consenter.Metrics().LastOffsetPersisted.With("channel", chain.ChannelID()).Set(float64(metadata.LastOffsetPersisted))
 }
 
-// WriteConfigBlock acts as a wrapper around the consenter support WriteConfigBlock, encoding the metadata,
-// and updating the metrics.
+// WriteConfigBlock 作为对 consenter 支持的 WriteConfigBlock 方法的一个封装，
+// 负责编码元数据并更新相关度量指标。
+// 参数:
+//   - block: 指向待写入的配置区块的指针。
+//   - metadata: 指向Kafka元数据的指针，携带如最后持久化偏移量等关键信息。
+//
+// 功能:
+//   - 使用 protoutil 库将元数据序列化为字节数组。
+//   - 调用底层 consenter 支持的接口来写入配置区块及序列化后的元数据。
+//   - 更新度量指标，记录当前通道的最后持久化偏移量，这对于监控系统状态至关重要。
 func (chain *chainImpl) WriteConfigBlock(block *cb.Block, metadata *ab.KafkaMetadata) {
 	chain.ConsenterSupport.WriteConfigBlock(block, protoutil.MarshalOrPanic(metadata))
 	chain.consenter.Metrics().LastOffsetPersisted.With("channel", chain.ChannelID()).Set(float64(metadata.LastOffsetPersisted))
 }
 
-// Post a CONNECT message to the channel using the given retry options. This
-// prevents the panicking that would occur if we were to set up a consumer and
-// seek on a partition that hadn't been written to yet.
+// 使用给定的重试选项向通道发送一个CONNECT消息。通常用于健康检查或维持与Kafka服务器的活跃连接状态。
+// 参数:
+//   - retryOptions: 控制重试行为的本地配置。
+//   - exitChan: 一个通道，用于通知此函数应停止重试并退出。
+//   - producer: 已配置的Sarama同步生产者，用于发送消息。
+//   - channel: 消息目标的通道信息。
+//
+// 返回:
+//   - error: 如果在发送CONNECT消息过程中发生错误，则返回错误；否则返回nil。
 func sendConnectMessage(retryOptions localconfig.Retry, exitChan chan struct{}, producer sarama.SyncProducer, channel channel) error {
-	logger.Infof("[channel: %s] About to post the CONNECT message...", channel.topic())
+	logger.Infof("[channel: %s] 即将发送CONNECT消息...", channel.topic())
 
+	// 创建一个新的CONNECT消息的payload
 	payload := protoutil.MarshalOrPanic(newConnectMessage())
+	// 根据通道和payload构造一个新的生产者消息
 	message := newProducerMessage(channel, payload)
 
-	retryMsg := "Attempting to post the CONNECT message..."
+	// 定义重试时的提示信息
+	retryMsg := "尝试发送CONNECT消息..."
+	// 初始化一个重试过程，用于发送CONNECT消息
 	postConnect := newRetryProcess(retryOptions, exitChan, channel, retryMsg, func() error {
 		select {
+		// 监听退出通道，若收到信号则退出循环
 		case <-exitChan:
-			logger.Debugf("[channel: %s] Consenter for channel exiting, aborting retry", channel)
+			logger.Debugf("[channel: %s] 通道的共识器正在退出，中断重试", channel)
 			return nil
+		// 默认情况，尝试发送消息
 		default:
 			_, _, err := producer.SendMessage(message)
-			return err
+			return err // 返回发送消息的错误结果
 		}
 	})
 
+	// 执行重试逻辑以发送CONNECT消息
 	return postConnect.retry()
 }
 
+// 在定时器到期时发送一个时间切分（TimeToCut）消息到Kafka。
+// 参数:
+//   - producer: 已配置的Sarama同步生产者，用于发送消息。
+//   - channel: 消息目标的通道信息。
+//   - timeToCutBlockNumber: 指示应切割新区块的区块编号。
+//   - timer: 表示当前时间切分消息触发定时器的通道，到期后置为nil。
+//
+// 返回:
+//   - error: 如果发送消息过程中出现错误，则返回该错误；否则返回nil。
 func sendTimeToCut(producer sarama.SyncProducer, channel channel, timeToCutBlockNumber uint64, timer *<-chan time.Time) error {
-	logger.Debugf("[channel: %s] Time-to-cut block [%d] timer expired", channel.topic(), timeToCutBlockNumber)
+	logger.Debugf("[通道: %s] 切块时间区块[%d]的计时器已过期", channel.topic(), timeToCutBlockNumber)
+	// 定时器执行完毕后将其设为nil
 	*timer = nil
+	// 构造时间切分消息的payload
 	payload := protoutil.MarshalOrPanic(newTimeToCutMessage(timeToCutBlockNumber))
+	// 根据通道和payload创建生产者消息
 	message := newProducerMessage(channel, payload)
+	// 发送时间切分消息到Kafka
 	_, _, err := producer.SendMessage(message)
-	return err
+	return err // 返回发送操作的错误状态
 }
 
-// Sets up the partition consumer for a channel using the given retry options.
+// 使用给定的重试选项为特定通道设置分区消费者。
+// 参数:
+//   - retryOptions: 控制定时重试策略的配置。
+//   - haltChan: 一个通道，当接收到信号时停止重试并退出函数。
+//   - parentConsumer: 已经初始化的父级Kafka消费者实例。
+//   - channel: 包含通道主题和分区信息的结构。
+//   - startFrom: 从该偏移量开始消费消息。
+//
+// 返回:
+//   - sarama.PartitionConsumer: 成功创建的分区消费者实例。
+//   - error: 如果在创建消费者过程中发生错误，则返回错误；否则返回nil。
 func setupChannelConsumerForChannel(retryOptions localconfig.Retry, haltChan chan struct{}, parentConsumer sarama.Consumer, channel channel, startFrom int64) (sarama.PartitionConsumer, error) {
 	var err error
-	var channelConsumer sarama.PartitionConsumer
+	var channelConsumer sarama.PartitionConsumer // 初始化分区消费者变量
 
-	logger.Infof("[channel: %s] Setting up the channel consumer for this channel (start offset: %d)...", channel.topic(), startFrom)
+	// 记录日志信息，指出即将为通道设置消费者，并指定起始偏移量
+	logger.Infof("[通道: %s] 正在为此通道设置消费者 (起始偏移量: %d)...", channel.topic(), startFrom)
 
-	retryMsg := "Connecting to the Kafka cluster"
+	// 定义在重试逻辑中使用的提示信息
+	retryMsg := "连接到Kafka集群"
+
+	// 创建一个新的重试处理过程，尝试从指定偏移量开始为通道的特定分区创建消费者
 	setupChannelConsumer := newRetryProcess(retryOptions, haltChan, channel, retryMsg, func() error {
+		// 使用父级消费者尝试消费指定通道主题和分区的指定起始偏移量的消息
 		channelConsumer, err = parentConsumer.ConsumePartition(channel.topic(), channel.partition(), startFrom)
-		return err
+		return err // 返回任何可能发生的错误
 	})
 
+	// 执行重试逻辑以设置通道消费者
 	return channelConsumer, setupChannelConsumer.retry()
 }
 
-// Sets up the parent consumer for a channel using the given retry options.
+// 使用给定的重试选项为指定通道生产者设置父级消费者(先创建一个消费者的连接, 但是不指定连接到哪个主题和分区, 后面动态创建)。
+// 参数:
+//   - retryOptions: 控制重试逻辑的本地配置。
+//   - haltChan: 用于通知应停止重试的通道。
+//   - brokers: Kafka代理的地址列表。
+//   - brokerConfig: 与Kafka交互的Sarama配置。
+//   - channel: 消费者将订阅的通道信息。
+//
+// 返回:
+//   - sarama.Consumer: 成功连接到Kafka集群后创建的消费者实例。
+//   - error: 如果在设置消费者过程中发生错误，则返回错误；否则返回nil。
 func setupParentConsumerForChannel(retryOptions localconfig.Retry, haltChan chan struct{}, brokers []string, brokerConfig *sarama.Config, channel channel) (sarama.Consumer, error) {
 	var err error
-	var parentConsumer sarama.Consumer
+	var parentConsumer sarama.Consumer // 初始化父级消费者变量
 
-	logger.Infof("[channel: %s] Setting up the parent consumer for this channel...", channel.topic())
+	// 记录日志，指示正在为通道设置父级消费者
+	logger.Infof("[channel: %s] 正在为此通道设置父级消费者...", channel.topic())
 
-	retryMsg := "Connecting to the Kafka cluster"
+	// 定义在重试时输出的提示信息
+	retryMsg := "连接到Kafka集群"
+
+	// 创建一个新的重试过程，尝试连接到Kafka并创建消费者
 	setupParentConsumer := newRetryProcess(retryOptions, haltChan, channel, retryMsg, func() error {
+		// 尝试使用提供的配置和代理地址创建一个新的消费者实例
 		parentConsumer, err = sarama.NewConsumer(brokers, brokerConfig)
-		return err
+		return err // 返回错误以供重试逻辑使用
 	})
 
+	// 执行重试逻辑以设置父级消费者
 	return parentConsumer, setupParentConsumer.retry()
 }
 
-// Sets up the writer/producer for a channel using the given retry options.
+// 使用给定的重试选项为特定通道设置生产者（writer/producer）。
+// 参数:
+//   - retryOptions: 控制重试行为的本地配置。
+//   - haltChan: 一个通道，用于通知此函数应停止重试并立即返回。
+//   - brokers: Kafka代理的地址列表。
+//   - brokerConfig: 与Kafka代理交互时使用的Sarama配置。
+//   - channel: 要为之设置生产者的通道信息。
+//
+// 返回:
+//   - sarama.SyncProducer: 成功连接到Kafka集群后创建的同步生产者。
+//   - error: 如果在设置生产者过程中发生错误，则返回错误；否则返回nil。
 func setupProducerForChannel(retryOptions localconfig.Retry, haltChan chan struct{}, brokers []string, brokerConfig *sarama.Config, channel channel) (sarama.SyncProducer, error) {
 	var err error
-	var producer sarama.SyncProducer
+	var producer sarama.SyncProducer // 初始化生产者变量
 
-	logger.Infof("[channel: %s] Setting up the producer for this channel...", channel.topic())
+	// 记录日志信息，指示正在为此通道设置生产者
+	logger.Infof("[channel: %s] 正在为此通道设置生产者...", channel.topic())
 
-	retryMsg := "Connecting to the Kafka cluster"
+	// 定义重试时的提示信息
+	retryMsg := "连接到Kafka集群"
+
+	// 初始化一个重试过程，尝试连接到Kafka并创建生产者
 	setupProducer := newRetryProcess(retryOptions, haltChan, channel, retryMsg, func() error {
+		// 尝试使用提供的配置和代理地址创建一个新的同步生产者
 		producer, err = sarama.NewSyncProducer(brokers, brokerConfig)
-		return err
+		return err // 返回错误以供重试逻辑使用
 	})
 
+	// 执行重试逻辑以尝试设置生产者
 	return producer, setupProducer.retry()
 }
 
@@ -1310,27 +1464,41 @@ func setupTopicForChannel(retryOptions localconfig.Retry, haltChan chan struct{}
 	return setupTopic.retry() // 执行重试逻辑
 }
 
-// Replica ID information can accurately be retrieved only when the cluster
-// is healthy. Otherwise, the replica request does not return the full set
-// of initial replicas. This information is needed to provide context when
-// a health check returns an error.
+// 只有当集群处于健康状态时，才能准确获取副本ID信息。
+// 否则，副本请求不会返回完整的初始副本集。当健康检查返回错误时，
+// 需要此信息来提供上下文。
+// 参数:
+//   - retryOptions: 控制重试行为的本地配置。
+//   - haltChan: 用于指示应停止重试的通道。
+//   - brokers: Kafka代理的地址列表。
+//   - brokerConfig: Sarama客户端配置。
+//   - channel: 包含主题和分区信息的通道实例。
+//
+// 返回:
+//   - []int32: 成功检索到的副本ID列表。
+//   - error: 如果在获取副本信息过程中发生错误，则返回错误；否则返回nil。
 func getHealthyClusterReplicaInfo(retryOptions localconfig.Retry, haltChan chan struct{}, brokers []string, brokerConfig *sarama.Config, channel channel) ([]int32, error) {
-	var replicaIDs []int32
+	var replicaIDs []int32 // 初始化副本ID列表
 
-	retryMsg := "Getting list of Kafka brokers replicating the channel"
+	// 定义重试时的日志提示信息
+	retryMsg := "获取复制通道的Kafka代理列表"
+	// 初始化一个新的重试过程来获取副本信息
 	getReplicaInfo := newRetryProcess(retryOptions, haltChan, channel, retryMsg, func() error {
+		// 使用配置创建Kafka客户端
 		client, err := sarama.NewClient(brokers, brokerConfig)
 		if err != nil {
-			return err
+			return err // 客户端创建失败，返回错误
 		}
-		defer client.Close()
+		defer client.Close() // 确保客户端在函数结束时关闭
 
+		// 尝试获取指定主题和分区的副本列表
 		replicaIDs, err = client.Replicas(channel.topic(), channel.partition())
 		if err != nil {
-			return err
+			return err // 获取副本信息失败，返回错误
 		}
-		return nil
+		return nil // 成功获取副本信息
 	})
 
+	// 执行重试逻辑以获取副本信息
 	return replicaIDs, getReplicaInfo.retry()
 }

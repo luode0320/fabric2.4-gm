@@ -59,19 +59,28 @@ type asn1Header struct {
 	DataHash     []byte
 }
 
+// BlockHeaderBytes 将给定的区块链区块头结构转换为ASN.1编码的字节切片。
 func BlockHeaderBytes(b *cb.BlockHeader) []byte {
+	// 定义一个asn1Header结构体，用于存放区块链区块头信息，
+	// 以便使用ASN.1编码。这里使用big.Int类型来存储区块号以兼容ASN.1编码要求。
 	asn1Header := asn1Header{
-		PreviousHash: b.PreviousHash,
-		DataHash:     b.DataHash,
-		Number:       new(big.Int).SetUint64(b.Number),
+		PreviousHash: b.PreviousHash,                   // 上区块的哈希值
+		DataHash:     b.DataHash,                       // 本区块数据的哈希值
+		Number:       new(big.Int).SetUint64(b.Number), // 区块号转换为big.Int类型
 	}
+
+	// 使用asn1.Marshal对asn1Header进行编码。
+	// asn1是Abstract Syntax Notation One的缩写，是一种数据结构描述语言，
+	// 常用于X.509证书和协议数据单元(PDU)的编码。
 	result, err := asn1.Marshal(asn1Header)
 	if err != nil {
-		// Errors should only arise for types which cannot be encoded, since the
-		// BlockHeader type is known a-priori to contain only encodable types, an
-		// error here is fatal and should not be propagated
+		// 由于我们知道BlockHeader类型只包含可编码的类型，理论上不应出现编码错误。
+		// 如果发生错误，这表明出现了不应该的编程错误或者是类型不兼容的严重问题，
+		// 因此选择通过panic直接终止程序，而不是向外传播错误。
 		panic(err)
 	}
+
+	// 返回ASN.1编码后的字节切片。
 	return result
 }
 

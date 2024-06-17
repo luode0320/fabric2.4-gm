@@ -22,7 +22,7 @@ type OrdererConfigFetcher interface {
 
 // Receiver 定义了一个有序广播消息的接收器接口。
 type Receiver interface {
-	// Ordered 应在消息被排序时依次调用。
+	// Ordered 应在消息被排序时依次调用, 这个并不是对交易排序, 只是对交易的大小切割为多个区块高度。
 	// `msg`接收的消息本身。
 	// `messageBatches`中的每个批次都将被打包进一个区块中。
 	// `pending`表示接收器中是否仍有待处理的消息。
