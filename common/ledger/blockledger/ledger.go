@@ -46,9 +46,10 @@ type Reader interface {
 	RetrieveBlockByNumber(blockNumber uint64) (*cb.Block, error)
 }
 
-// Writer allows the caller to modify the ledger
+// Writer 接口允许调用者修改账本。
 type Writer interface {
-	// Append a new block to the ledger
+	// Append 向账本追加一个新的区块。
+	// 参数block为待追加的区块指针。
 	Append(block *cb.Block) error
 }
 
