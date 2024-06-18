@@ -109,6 +109,7 @@ type ConsenterSupport interface {
 	WriteConfigBlock(block *cb.Block, encodedMetadataValue []byte)
 
 	// Sequence 返回当前的配置序列号。
+	// 配置序列号通常用于追踪和标识系统配置的更新历史，确保各节点间配置状态的一致性。
 	Sequence() uint64
 
 	// ChannelID 返回与此支持关联的通道ID。

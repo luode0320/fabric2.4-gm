@@ -53,21 +53,25 @@ type Consenter interface {
 	WaitReady() error
 }
 
-// Handler 处理来自 Broadcast AB gRPC service 的信息
+// Handler 负责处理通过 Broadcast AB gRPC 服务接收到的消息。
 type Handler struct {
+	// SupportRegistrar 是一个通道支持注册器，它提供了访问通道相关信息和处理器的接口，以支持消息处理过程。
 	SupportRegistrar ChannelSupportRegistrar
-	Metrics          *Metrics
+
+	// Metrics 包含了一组度量指标，用于监控和统计消息处理的性能和操作情况。
+	Metrics *Metrics
 }
 
 // Handle 从Broadcast流读取请求，处理请求，并将响应返回到流
 func (bh *Handler) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
 	// 从接收到的广播内容上下文中，解析出发送信息的远端地址
 	addr := util.ExtractRemoteAddress(srv.Context())
-	logger.Debugf("Starting new broadcast loop for %s", addr)
+	logger.Debugf("开始 %s 的新广播循环", addr)
 	for {
+		// 循环接受来自客户端gprc的请求, 如果没有会阻塞线程
 		msg, err := srv.Recv()
 		if err == io.EOF {
-			logger.Debugf("Received EOF from %s, hangup", addr)
+			logger.Debugf("收到来自 %s 的EOF，挂断", addr)
 			return nil
 		}
 		if err != nil {
@@ -75,6 +79,7 @@ func (bh *Handler) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
 			return err
 		}
 
+		// 验证单个消息，并将其放入共识队列中进行处理。
 		resp := bh.ProcessMessage(msg, addr)
 		err = srv.Send(resp)
 		if resp.Status != cb.Status_SUCCESS {
@@ -82,7 +87,7 @@ func (bh *Handler) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
 		}
 
 		if err != nil {
-			logger.Warningf("Error sending to %s: %s", addr, err)
+			logger.Warningf("发送到 %s 时出错: %s", addr, err)
 			return err
 		}
 	}
@@ -129,75 +134,96 @@ func (mt *MetricsTracker) BeginEnqueue() {
 	mt.EnqueueStartTime = time.Now()
 }
 
-// ProcessMessage 校验单条信息，然后将其放入队列中
+// ProcessMessage 验证单个消息，并将其放入共识队列中进行处理。
 func (bh *Handler) ProcessMessage(msg *cb.Envelope, addr string) (resp *ab.BroadcastResponse) {
+	// 初始化指标追踪器，初始设置为未知通道ID和交易类型
 	tracker := &MetricsTracker{
 		ChannelID: "unknown",
 		TxType:    "unknown",
 		Metrics:   bh.Metrics,
 	}
 	defer func() {
-		//这个地方如果不通过匿名函数，而直接将该方法作延迟执行，resp将获得resp的当前状态(总是nil)，而不是返回值
+		// 使用匿名函数确保在函数结束时使用最终的resp值更新追踪器
 		tracker.Record(resp)
 	}()
+
+	// 开始验证阶段的指标追踪
 	tracker.BeginValidate()
 
+	// 通过SupportRegistrar获取通道处理器，判断消息类型，以及是否为配置更新消息
 	chdr, isConfig, processor, err := bh.SupportRegistrar.BroadcastChannelSupport(msg)
 	if chdr != nil {
+		// 设置追踪器中的通道ID和交易类型
 		tracker.ChannelID = chdr.ChannelId
 		tracker.TxType = cb.HeaderType(chdr.Type).String()
 	}
 	if err != nil {
-		logger.Warningf("[channel: %s] Could not get message processor for serving %s: %s", tracker.ChannelID, addr, err)
+		// 获取处理器失败，记录警告并返回错误响应
+		logger.Warningf("[channel: %s] 无法为服务 %s 获取消息处理器: %s", tracker.ChannelID, addr, err)
 		return &ab.BroadcastResponse{Status: cb.Status_BAD_REQUEST, Info: err.Error()}
 	}
 
+	// 处理普通消息
 	if !isConfig {
-		logger.Debugf("[channel: %s] Broadcast is processing normal message from %s with txid '%s' of type %s", chdr.ChannelId, addr, chdr.TxId, cb.HeaderType_name[chdr.Type])
+		logger.Debugf("[channel: %s] 广播正在处理来自 %s 的常规消息，txid为'%s'，类型为 %s", chdr.ChannelId, addr, chdr.TxId, cb.HeaderType_name[chdr.Type])
 
+		// 处理常规消息并获取配置序列号
 		configSeq, err := processor.ProcessNormalMsg(msg)
 		if err != nil {
-			logger.Warningf("[channel: %s] Rejecting broadcast of normal message from %s because of error: %s", chdr.ChannelId, addr, err)
+			// 消息处理失败，记录警告并返回错误响应
+			logger.Warningf("[channel: %s] 拒绝来自 %s 的常规消息广播，因为错误: %s", chdr.ChannelId, addr, err)
 			return &ab.BroadcastResponse{Status: ClassifyError(err), Info: err.Error()}
 		}
 		tracker.EndValidate()
 
+		// 开始入队指标追踪
 		tracker.BeginEnqueue()
 		if err = processor.WaitReady(); err != nil {
-			logger.Warningf("[channel: %s] Rejecting broadcast of message from %s with SERVICE_UNAVAILABLE: rejected by Consenter: %s", chdr.ChannelId, addr, err)
+			// 等待处理器就绪失败，记录警告并返回服务不可用响应
+			logger.Warningf("[channel: %s] 拒绝来自 %s 的消息广播，状态为SERVICE_UNAVAILABLE: 被共识者拒绝: %s", chdr.ChannelId, addr, err)
 			return &ab.BroadcastResponse{Status: cb.Status_SERVICE_UNAVAILABLE, Info: err.Error()}
 		}
 
+		// 将消息加入共识队列
 		err = processor.Order(msg, configSeq)
 		if err != nil {
-			logger.Warningf("[channel: %s] Rejecting broadcast of normal message from %s with SERVICE_UNAVAILABLE: rejected by Order: %s", chdr.ChannelId, addr, err)
+			// 加入共识队列失败，记录警告并返回服务不可用响应
+			logger.Warningf("[channel: %s] 拒绝来自 %s 的常规消息广播，状态为SERVICE_UNAVAILABLE: 被Order拒绝: %s", chdr.ChannelId, addr, err)
 			return &ab.BroadcastResponse{Status: cb.Status_SERVICE_UNAVAILABLE, Info: err.Error()}
 		}
-	} else { // isConfig
-		logger.Debugf("[channel: %s] Broadcast is processing config update message from %s", chdr.ChannelId, addr)
+	} else { // 处理配置更新消息
+		logger.Debugf("[channel: %s] 广播正在处理来自 %s 的配置更新消息", chdr.ChannelId, addr)
 
+		// 处理配置更新消息并获取新配置及配置序列号
 		config, configSeq, err := processor.ProcessConfigUpdateMsg(msg)
 		if err != nil {
-			logger.Warningf("[channel: %s] Rejecting broadcast of config message from %s because of error: %s", chdr.ChannelId, addr, err)
+			// 配置更新消息处理失败，记录警告并返回错误响应
+			logger.Warningf("[channel: %s] 拒绝来自 %s 的配置消息广播，因为错误: %s", chdr.ChannelId, addr, err)
 			return &ab.BroadcastResponse{Status: ClassifyError(err), Info: err.Error()}
 		}
 		tracker.EndValidate()
 
+		// 开始入队指标追踪
 		tracker.BeginEnqueue()
 		if err = processor.WaitReady(); err != nil {
-			logger.Warningf("[channel: %s] Rejecting broadcast of message from %s with SERVICE_UNAVAILABLE: rejected by Consenter: %s", chdr.ChannelId, addr, err)
+			// 等待处理器就绪失败，记录警告并返回服务不可用响应
+			logger.Warningf("[channel: %s] 拒绝来自 %s 的消息广播，状态为SERVICE_UNAVAILABLE: 被共识者拒绝: %s", chdr.ChannelId, addr, err)
 			return &ab.BroadcastResponse{Status: cb.Status_SERVICE_UNAVAILABLE, Info: err.Error()}
 		}
 
+		// 应用配置更新
 		err = processor.Configure(config, configSeq)
 		if err != nil {
-			logger.Warningf("[channel: %s] Rejecting broadcast of config message from %s with SERVICE_UNAVAILABLE: rejected by Configure: %s", chdr.ChannelId, addr, err)
+			// 配置应用失败，记录警告并返回服务不可用响应
+			logger.Warningf("[channel: %s] 拒绝来自 %s 的配置消息广播，状态为SERVICE_UNAVAILABLE: 被Configure拒绝: %s", chdr.ChannelId, addr, err)
 			return &ab.BroadcastResponse{Status: cb.Status_SERVICE_UNAVAILABLE, Info: err.Error()}
 		}
 	}
 
-	logger.Debugf("[channel: %s] Broadcast has successfully enqueued message of type %s from %s", chdr.ChannelId, cb.HeaderType_name[chdr.Type], addr)
+	// 成功入队消息后记录调试信息
+	logger.Debugf("[channel: %s] 广播已成功入队来自 %s 的类型为 %s 的消息", chdr.ChannelId, addr, cb.HeaderType_name[chdr.Type])
 
+	// 所有处理成功，返回成功响应
 	return &ab.BroadcastResponse{Status: cb.Status_SUCCESS}
 }
 

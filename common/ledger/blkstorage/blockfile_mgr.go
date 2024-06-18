@@ -274,28 +274,40 @@ func (mgr *blockfileMgr) close() {
 }
 
 func (mgr *blockfileMgr) moveToNextFile() {
+	// 准备下一个文件的blockfilesInfo结构，文件编号递增，文件大小初始化为0，保留最后一个持久化块号
 	blkfilesInfo := &blockfilesInfo{
 		latestFileNumber:   mgr.blockfilesInfo.latestFileNumber + 1,
 		latestFileSize:     0,
 		lastPersistedBlock: mgr.blockfilesInfo.lastPersistedBlock,
 	}
 
+	// 根据新文件编号创建一个新的文件写入器
 	nextFileWriter, err := newBlockfileWriter(
 		deriveBlockfilePath(mgr.rootDir, blkfilesInfo.latestFileNumber))
 	if err != nil {
-		panic(fmt.Sprintf("Could not open writer to next file: %s", err))
+		// 若打开新文件写入器失败，则触发panic
+		panic(fmt.Sprintf("无法打开下一个文件的写入器: %s", err))
 	}
+
+	// 关闭当前文件的写入器
 	mgr.currentFileWriter.close()
+
+	// 保存新文件信息到数据库，标记为新文件启动
 	err = mgr.saveBlkfilesInfo(blkfilesInfo, true)
 	if err != nil {
-		panic(fmt.Sprintf("Could not save next block file info to db: %s", err))
+		// 保存文件信息失败同样触发panic
+		panic(fmt.Sprintf("无法将下一个区块文件信息保存到数据库: %s", err))
 	}
+
+	// 更新当前文件写入器为新文件的写入器，并更新管理器中的blockfilesInfo
 	mgr.currentFileWriter = nextFileWriter
 	mgr.updateBlockfilesInfo(blkfilesInfo)
 }
 
 func (mgr *blockfileMgr) addBlock(block *common.Block) error {
+	// 获取区块链的当前信息
 	bcInfo := mgr.getBlockchainInfo()
+	// 检查待添加区块的高度是否与当前区块链高度相匹配
 	if block.Header.Number != bcInfo.Height {
 		return errors.Errorf(
 			"块高度应该是 %d, 但却是 %d",
@@ -313,12 +325,14 @@ func (mgr *blockfileMgr) addBlock(block *common.Block) error {
 			bcInfo.CurrentBlockHash, block.Header.PreviousHash,
 		)
 	}
+	// 序列化区块数据
 	blockBytes, info, err := serializeBlock(block)
 	if err != nil {
-		return errors.WithMessage(err, "error serializing block")
+		return errors.WithMessage(err, "序列化区块时出错")
 	}
+	// 获取新区块的哈希
 	blockHash := protoutil.BlockHeaderHash(block.Header)
-	// Get the location / offset where each transaction starts in the block and where the block ends
+	// 准备写入文件的数据长度信息
 	txOffsets := info.txOffsets
 	currentOffset := mgr.blockfilesInfo.latestFileSize
 
@@ -326,27 +340,26 @@ func (mgr *blockfileMgr) addBlock(block *common.Block) error {
 	blockBytesEncodedLen := proto.EncodeVarint(uint64(blockBytesLen))
 	totalBytesToAppend := blockBytesLen + len(blockBytesEncodedLen)
 
-	// Determine if we need to start a new file since the size of this block
-	// exceeds the amount of space left in the current file
+	// 检查当前文件是否有足够的空间存储新区块，若空间不足则切换到新的文件
 	if currentOffset+totalBytesToAppend > mgr.conf.maxBlockfileSize {
 		mgr.moveToNextFile()
 		currentOffset = 0
 	}
-	// append blockBytesEncodedLen to the file
+	// 尝试先写入新区块的长度信息，再写入区块数据本身
 	err = mgr.currentFileWriter.append(blockBytesEncodedLen, false)
 	if err == nil {
-		// append the actual block bytes to the file
+		// 写入失败时回滚文件到写入前的大小
 		err = mgr.currentFileWriter.append(blockBytes, true)
 	}
 	if err != nil {
 		truncateErr := mgr.currentFileWriter.truncateFile(mgr.blockfilesInfo.latestFileSize)
 		if truncateErr != nil {
-			panic(fmt.Sprintf("Could not truncate current file to known size after an error during block append: %s", err))
+			panic(fmt.Sprintf("写入区块后无法回滚文件到已知大小: %s", err))
 		}
-		return errors.WithMessage(err, "error appending block to file")
+		return errors.WithMessage(err, "将区块写入文件时出错")
 	}
 
-	// Update the blockfilesInfo with the results of adding the new block
+	// 更新blockfilesInfo，包括文件大小、最新块号等信息
 	currentBlkfilesInfo := mgr.blockfilesInfo
 	newBlkfilesInfo := &blockfilesInfo{
 		latestFileNumber:   currentBlkfilesInfo.latestFileNumber,
@@ -354,16 +367,17 @@ func (mgr *blockfileMgr) addBlock(block *common.Block) error {
 		noBlockFiles:       false,
 		lastPersistedBlock: block.Header.Number,
 	}
-	// save the blockfilesInfo in the database
+	// 保存更新后的blockfilesInfo到数据库
 	if err = mgr.saveBlkfilesInfo(newBlkfilesInfo, false); err != nil {
+		// 写入数据库失败时同样尝试回滚文件
 		truncateErr := mgr.currentFileWriter.truncateFile(currentBlkfilesInfo.latestFileSize)
 		if truncateErr != nil {
-			panic(fmt.Sprintf("Error in truncating current file to known size after an error in saving blockfiles info: %s", err))
+			panic(fmt.Sprintf("保存文件信息到数据库失败后无法回滚文件: %s", err))
 		}
-		return errors.WithMessage(err, "error saving blockfiles file info to db")
+		return errors.WithMessage(err, "保存文件信息到数据库时出错")
 	}
 
-	// Index block file location pointer updated with file suffex and offset for the new block
+	// 更新文件位置指针和事务偏移量，并将这些信息索引到数据库
 	blockFLP := &fileLocPointer{fileSuffixNum: newBlkfilesInfo.latestFileNumber}
 	blockFLP.offset = currentOffset
 	// shift the txoffset because we prepend length of bytes before block bytes
@@ -378,7 +392,7 @@ func (mgr *blockfileMgr) addBlock(block *common.Block) error {
 		return err
 	}
 
-	// update the blockfilesInfo (for storage) and the blockchain info (for APIs) in the manager
+	// 最后更新管理器中的区块链信息和文件信息
 	mgr.updateBlockfilesInfo(newBlkfilesInfo)
 	mgr.updateBlockchainInfo(blockHash, block)
 	return nil

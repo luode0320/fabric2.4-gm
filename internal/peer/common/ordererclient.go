@@ -43,26 +43,30 @@ func NewOrdererClientFromEnv() (*OrdererClient, error) {
 }
 
 // Broadcast 返回 AtomicBroadcast 服务的原子广播客户端
+// 该函数建立与排序服务的连接，用于广播交易至网络。
+// 成功时，返回一个可用于发送交易的BroadcastClient；失败则返回错误。
 func (oc *OrdererClient) Broadcast() (ab.AtomicBroadcast_BroadcastClient, error) {
 	conn, err := oc.CommonClient.clientConfig.Dial(oc.address)
 	if err != nil {
-		return nil, errors.WithMessagef(err, "orderer 客户端无法连接到 %s", oc.address)
+		return nil, errors.WithMessagef(err, "orderer 客户端无法连接到地址 %s", oc.address)
 	}
-	// TODO: 在返回之前检查我们是否应该实际处理错误
+	// todo：在返回BroadcastClient前，考虑是否需要进一步处理可能的错误情况
 	return ab.NewAtomicBroadcastClient(conn).Broadcast(context.TODO())
 }
 
-// Deliver returns a deliver client for the AtomicBroadcast service
+// Deliver 返回 AtomicBroadcast 服务的传递客户端
+// 该函数同样建立与排序服务的连接，但目的是接收已排序的区块数据流。
+// 成功建立连接后，返回一个DeliverClient用于拉取新区块；如果连接失败，则返回错误。
 func (oc *OrdererClient) Deliver() (ab.AtomicBroadcast_DeliverClient, error) {
 	conn, err := oc.CommonClient.clientConfig.Dial(oc.address)
 	if err != nil {
-		return nil, errors.WithMessagef(err, "orderer client failed to connect to %s", oc.address)
+		return nil, errors.WithMessagef(err, "orderer 客户端连接到 %s 失败", oc.address)
 	}
-	// TODO: check to see if we should actually handle error before returning
+	// todo：在返回DeliverClient之前，评估是否需要实现错误处理逻辑
 	return ab.NewAtomicBroadcastClient(conn).Deliver(context.TODO())
 }
 
-// Certificate returns the TLS client certificate (if available)
+// Certificate 返回TLS客户端证书 (如果可用)
 func (oc *OrdererClient) Certificate() tls.Certificate {
 	return oc.CommonClient.Certificate()
 }

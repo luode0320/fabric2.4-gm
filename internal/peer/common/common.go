@@ -118,13 +118,23 @@ func (cc *CommonClient) Dial(address string) (*grpc.ClientConn, error) {
 	return cc.clientConfig.Dial(address)
 }
 
+// 函数用于初始化一系列函数指针，这些函数指针在包加载时即被设定，
+// 以便在整个程序中提供统一的访问点来获取各种客户端和服务连接。
+// 这些初始化对于确保后续代码能够顺利调用到正确的实例化逻辑至关重要。
 func init() {
+	// 设置获取背书服务客户端的函数
 	GetEndorserClientFnc = GetEndorserClient
+	// 设置获取默认签名者的函数
 	GetDefaultSignerFnc = GetDefaultSigner
+	// 设置获取广播服务客户端的函数
 	GetBroadcastClientFnc = GetBroadcastClient
+	// 设置根据链标识获取排序服务端点的函数
 	GetOrdererEndpointOfChainFnc = GetOrdererEndpointOfChain
+	// 设置获取交付服务客户端的函数
 	GetDeliverClientFnc = GetDeliverClient
+	// 设置获取对等节点交付服务客户端的函数
 	GetPeerDeliverClientFnc = GetPeerDeliverClient
+	// 设置获取客户端证书的函数
 	GetClientCertificateFnc = GetClientCertificate
 }
 

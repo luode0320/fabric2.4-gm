@@ -1519,14 +1519,13 @@ func (n *Network) PeerClientConn(p *Peer) *grpc.ClientConn {
 	)
 }
 
-// OrdererClientConn returns a grpc.ClientConn configured to connect to the
-// provided orderer. This connection can be used to create clients for the
-// orderer services. The client connection should be closed when the tests are
-// done using it.
+// OrdererClientConn 返回一个配置好的grpc.ClientConn实例，用于连接到给定的排序服务节点。
+// 此连接可用于创建针对排序服务的客户端。测试完成后应关闭此客户端连接以释放资源。
 func (n *Network) OrdererClientConn(o *Orderer) *grpc.ClientConn {
+	// 使用排序服务的地址和TLS证书路径来建立一个新的gRPC客户端连接
 	return n.newClientConn(
-		n.OrdererAddress(o, ListenPort),
-		filepath.Join(n.OrdererLocalTLSDir(o), "ca.crt"),
+		n.OrdererAddress(o, ListenPort),                  // 获取排序服务的监听地址
+		filepath.Join(n.OrdererLocalTLSDir(o), "ca.crt"), // 指定排序服务的CA证书文件路径，用于TLS安全连接
 	)
 }
 

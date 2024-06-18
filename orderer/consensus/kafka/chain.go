@@ -60,7 +60,7 @@ const (
 	indexExitChanPass
 )
 
-// newChain 用于根据提供的共识器、支持资源以及偏移量信息创建一个新的链实例。
+// 用于根据提供的共识器、支持资源以及偏移量信息创建一个新的链实例。
 // 参数:
 //   - consenter: 满足commonConsenter接口的共识器实例，提供了基础配置和度量指标。
 //   - support: 提供了链操作支持，如账本访问、配置验证等功能。
@@ -153,10 +153,10 @@ type chainImpl struct {
 	// 是同步消息生产者的实例，用于向Kafka发送消息。
 	producer syncProducer
 
-	// parentConsumer 是Sarama消费者实例，用于从Kafka主题消费消息。
+	// 是Sarama消费者实例，用于从Kafka主题消费消息。
 	parentConsumer sarama.Consumer
 
-	// channelConsumer 是针对特定分区的消费者，用于从Kafka的单一分区消费消息。
+	// 是针对特定分区的消费者，用于从Kafka的单一分区消费消息。
 	channelConsumer sarama.PartitionConsumer
 
 	// doneReprocessingMutex 用于在改变 doneReprocessingMsgInFlight 状态时进行同步。
@@ -236,6 +236,7 @@ func startThread(chain *chainImpl) {
 	logger.Infof("[通道: %s] CONNECT消息发送成功", chain.channel.topic())
 
 	// 初始化父级消费者, (先创建一个消费者的连接, 但是不指定连接到哪个主题和分区, 后面动态创建)
+	// 默认情况下每个消费者实例都是独立的，即每个实例都会创建一个唯一的消费者组（内部生成）。这意味着，如果不显式设置消费者组ID，每次创建的消费者实例都将独自消费所有分区的消息
 	chain.parentConsumer, err = setupParentConsumerForChannel(chain.consenter.retryOptions(), chain.haltChan, chain.SharedConfig().KafkaBrokers(), chain.consenter.brokerConfig(), chain.channel)
 	if err != nil {
 		logger.Panicf("[通道: %s] 无法设置父级消费者 = %s", chain.channel.topic(), err)
@@ -270,32 +271,30 @@ func startThread(chain *chainImpl) {
 	chain.processMessagesToBlocks()
 }
 
-// Halt frees the resources which were allocated for this Chain. Implements the
-// consensus.Chain interface.
+// Halt 释放为该Chain分配的资源。实现了consensus.Chain接口。
 func (chain *chainImpl) Halt() {
 	select {
-	case <-chain.startChan:
-		// chain finished starting, so we can halt it
+	case <-chain.startChan: // 等待直到Chain启动完成
+		// Chain已完成启动，因此可以停止它
 		select {
-		case <-chain.haltChan:
-			// This construct is useful because it allows Halt() to be called
-			// multiple times (by a single thread) w/o panicking. Recall that a
-			// receive from a closed channel returns (the zero value) immediately.
-			logger.Warningf("[channel: %s] Halting of chain requested again", chain.ChannelID())
+		case <-chain.haltChan: // 检查Chain是否已被请求停止
+			// 此结构很有用，因为它允许Halt()被单个线程多次调用而不会引起恐慌。
+			// 回忆从已关闭通道接收会立即返回（零值）。
+			logger.Warningf("[channel: %s] 链的停止请求再次发生", chain.ChannelID())
 		default:
-			logger.Criticalf("[channel: %s] Halting of chain requested", chain.ChannelID())
-			// stat shutdown of chain
+			logger.Criticalf("[channel: %s] 请求停止链", chain.ChannelID())
+			// 开始停止链的操作
 			close(chain.haltChan)
-			// wait for processing of messages to blocks to finish shutting down
+			// 等待消息到区块的处理完成以进行关闭
 			<-chain.doneProcessingMessagesToBlocks
-			// close the kafka producer and the consumer
+			// 关闭Kafka生产者和消费者
 			chain.closeKafkaObjects()
-			logger.Debugf("[channel: %s] Closed the haltChan", chain.ChannelID())
+			logger.Debugf("[channel: %s] 已关闭haltChan", chain.ChannelID())
 		}
 	default:
-		logger.Warningf("[channel: %s] Waiting for chain to finish starting before halting", chain.ChannelID())
-		<-chain.startChan
-		chain.Halt()
+		logger.Warningf("[channel: %s] 在停止链之前等待链完成启动", chain.ChannelID())
+		<-chain.startChan // 继续等待Chain启动完成
+		chain.Halt()      // 重新调用Halt以执行停止操作
 	}
 }
 
@@ -331,23 +330,36 @@ func (chain *chainImpl) reprocessConfigPending() {
 	chain.doneReprocessingMsgInFlight = make(chan struct{})
 }
 
-// Implements the consensus.Chain interface. Called by Broadcast().
+// Order 实现consensus.Chain接口。由gRPC广播调用。
 func (chain *chainImpl) Order(env *cb.Envelope, configSeq uint64) error {
 	return chain.order(env, configSeq, int64(0))
 }
 
+// 函数负责将给定的信封（Envelope）按照特定配置序列和原始偏移量进行排序处理。
+// 具体步骤包括序列化信封、创建正常消息实例，并尝试将其加入到队列中。
+// 如果序列化失败或无法成功入队，函数会返回相应的错误。
 func (chain *chainImpl) order(env *cb.Envelope, configSeq uint64, originalOffset int64) error {
+	// 尝试将信封序列化为字节切片，以便存储或传输
 	marshaledEnv, err := protoutil.Marshal(env)
 	if err != nil {
-		return errors.Errorf("cannot enqueue, unable to marshal envelope: %s", err)
+		// 序列化失败时，返回错误信息
+		return errors.Errorf("无法入队，无法序列化信封: %s", err)
 	}
-	if !chain.enqueue(newNormalMessage(marshaledEnv, configSeq, originalOffset)) {
-		return errors.Errorf("cannot enqueue")
+
+	// 使用序列化后的信封、配置序列号和原始偏移量创建一个新的正常消息实例
+	newMessage := newNormalMessage(marshaledEnv, configSeq, originalOffset)
+
+	// 尝试将新消息加入到链的队列中
+	if !chain.enqueue(newMessage) {
+		// 若无法成功入队，则返回错误
+		return errors.Errorf("无法入队")
 	}
+
+	// 若一切顺利，返回nil表示操作成功
 	return nil
 }
 
-// 此方法由Broadcast函数调用
+// Configure 实现consensus.Chain接口。由gRPC广播调用。
 func (chain *chainImpl) Configure(config *cb.Envelope, configSeq uint64) error {
 	// 调用内部的configure方法以处理配置更新，此处originalOffset初始化为0，因为它是由Broadcast直接调用，
 	// 而非重放或恢复过程中，所以不需要特定的原始偏移量信息。
@@ -606,33 +618,38 @@ func (chain *chainImpl) processMessagesToBlocks() ([]uint64, error) {
 	}
 }
 
+// 关闭与Kafka相关的所有对象（消费者和生产者）并收集可能发生的错误。
 func (chain *chainImpl) closeKafkaObjects() []error {
-	var errs []error
+	var errs []error // 用于收集关闭操作中遇到的所有错误
 
+	// 尝试关闭channelConsumer并记录错误
 	err := chain.channelConsumer.Close()
 	if err != nil {
-		logger.Errorf("[channel: %s] could not close channelConsumer cleanly = %s", chain.ChannelID(), err)
+		logger.Errorf("[channel: %s] 无法干净地关闭channelConsumer = %s", chain.ChannelID(), err)
 		errs = append(errs, err)
 	} else {
-		logger.Debugf("[channel: %s] Closed the channel consumer", chain.ChannelID())
+		logger.Debugf("[channel: %s] 已关闭channel消费者", chain.ChannelID())
 	}
 
+	// 尝试关闭parentConsumer并记录错误
 	err = chain.parentConsumer.Close()
 	if err != nil {
-		logger.Errorf("[channel: %s] could not close parentConsumer cleanly = %s", chain.ChannelID(), err)
+		logger.Errorf("[channel: %s] 无法干净地关闭parentConsumer = %s", chain.ChannelID(), err)
 		errs = append(errs, err)
 	} else {
-		logger.Debugf("[channel: %s] Closed the parent consumer", chain.ChannelID())
+		logger.Debugf("[channel: %s] 已关闭父级消费者", chain.ChannelID())
 	}
 
+	// 尝试关闭producer并记录错误
 	err = chain.producer.Close()
 	if err != nil {
-		logger.Errorf("[channel: %s] could not close producer cleanly = %s", chain.ChannelID(), err)
+		logger.Errorf("[channel: %s] 无法干净地关闭producer = %s", chain.ChannelID(), err)
 		errs = append(errs, err)
 	} else {
-		logger.Debugf("[channel: %s] Closed the producer", chain.ChannelID())
+		logger.Debugf("[channel: %s] 已关闭生产者", chain.ChannelID())
 	}
 
+	// 返回所有收集到的错误
 	return errs
 }
 
@@ -705,13 +722,20 @@ func newConnectMessage() *ab.KafkaMessage {
 	}
 }
 
+// 用于创建一个新的表示常规消息的 `ab.KafkaMessage` 实例。
+// 这种消息类型包含指定的有效载荷、配置序列号、消息类别（普通）以及原始偏移量。
 func newNormalMessage(payload []byte, configSeq uint64, originalOffset int64) *ab.KafkaMessage {
 	return &ab.KafkaMessage{
+		// 指定消息类型为常规消息
 		Type: &ab.KafkaMessage_Regular{
 			Regular: &ab.KafkaMessageRegular{
-				Payload:        payload,
-				ConfigSeq:      configSeq,
-				Class:          ab.KafkaMessageRegular_NORMAL,
+				// 设置消息的有效载荷
+				Payload: payload,
+				// 消息关联的配置序列号
+				ConfigSeq: configSeq,
+				// 消息类别为普通消息
+				Class: ab.KafkaMessageRegular_NORMAL,
+				// 消息在Kafka中的原始偏移量
 				OriginalOffset: originalOffset,
 			},
 		},
@@ -936,53 +960,56 @@ func (chain *chainImpl) processRegular(regularMessage *ab.KafkaMessageRegular, r
 		chain.timer = nil
 	}
 
+	// 获取当前通道配置序列号
 	seq := chain.Sequence()
 
+	// 反序列化常规消息的有效载荷为Envelope结构体
 	env := &cb.Envelope{}
 	if err := proto.Unmarshal(regularMessage.Payload, env); err != nil {
-		// This shouldn't happen, it should be filtered at ingress
-		return fmt.Errorf("failed to unmarshal payload of regular message because = %s", err)
+		// 此错误理论上不应发生，因为消息在入口处应已做过验证
+		return fmt.Errorf("无法反序列化常规消息的有效载荷，原因：%s", err)
 	}
 
-	logger.Debugf("[channel: %s] Processing regular Kafka message of type %s", chain.ChannelID(), regularMessage.Class.String())
+	// 记录日志，指示正在处理特定类型的常规Kafka消息
+	logger.Debugf("[通道: %s] 正在处理类型为%s的常规Kafka消息", chain.ChannelID(), regularMessage.Class.String())
 
-	// If we receive a message from a pre-v1.1 orderer, or resubmission is explicitly disabled, every orderer
-	// should operate as the pre-v1.1 ones: validate again and not attempt to reorder. That is because the
-	// pre-v1.1 orderers cannot identify re-ordered messages and resubmissions could lead to committing
-	// the same message twice.
-	//
-	// The implicit assumption here is that the resubmission capability flag is set only when there are no more
-	// pre-v1.1 orderers on the network. Otherwise it is unset, and this is what we call a compatibility mode.
+	// 检查接收到的消息是否来自v1.1之前的排序服务节点，或者是否明确禁用了重提交功能
+	// 在这些情况下，所有排序服务节点应如同v1.1之前的行为：再次验证但不重新排序
+	// 这是因为早期版本的排序服务节点无法识别重新排序的消息，重提交可能导致消息被重复提交
 	if regularMessage.Class == ab.KafkaMessageRegular_UNKNOWN || !chain.SharedConfig().Capabilities().Resubmission() {
-		// Received regular message of type UNKNOWN or resubmission if off, indicating an OSN network with v1.0.x orderer
-		logger.Warningf("[channel: %s] This orderer is running in compatibility mode", chain.ChannelID())
+		// 收到类型为UNKNOWN的消息或重提交功能关闭，表明网络中存在v1.0.x版本的排序节点
+		logger.Warningf("[通道: %s] 此排序节点正以兼容模式运行", chain.ChannelID())
 
+		// 解析信封中的通道头
 		chdr, err := protoutil.ChannelHeader(env)
 		if err != nil {
-			return fmt.Errorf("discarding bad config message because of channel header unmarshalling error = %s", err)
+			return fmt.Errorf("因通道头反序列化错误而丢弃错误的配置消息，错误：%s", err)
 		}
 
+		// 根据通道头对消息进行分类
 		class := chain.ClassifyMsg(chdr)
 		switch class {
 		case msgprocessor.ConfigMsg:
+			// 处理解析和处理配置消息，如有错误则丢弃
 			if _, _, err := chain.ProcessConfigMsg(env); err != nil {
-				return fmt.Errorf("discarding bad config message because = %s", err)
+				return fmt.Errorf("因错误 = %s 而丢弃错误的配置消息", err)
 			}
-
 			commitConfigMsg(env, chain.lastOriginalOffsetProcessed)
 
 		case msgprocessor.NormalMsg:
+			// 处理解析和处理普通消息，如有错误则丢弃
 			if _, err := chain.ProcessNormalMsg(env); err != nil {
-				return fmt.Errorf("discarding bad normal message because = %s", err)
+				return fmt.Errorf("因错误 = %s 而丢弃错误的普通消息", err)
 			}
-
 			commitNormalMsg(env, chain.lastOriginalOffsetProcessed)
 
 		case msgprocessor.ConfigUpdateMsg:
-			return fmt.Errorf("not expecting message of type ConfigUpdate")
+			// 不应接收到ConfigUpdate类型的消息，直接返回错误
+			return fmt.Errorf("未预期到类型为ConfigUpdate的消息")
 
 		default:
-			logger.Panicf("[channel: %s] Unsupported message classification: %v", chain.ChannelID(), class)
+			// 遇到不支持的消息分类时，触发恐慌
+			logger.Panicf("[通道: %s] 不支持的消息分类：%v", chain.ChannelID(), class)
 		}
 
 		return nil
@@ -990,128 +1017,115 @@ func (chain *chainImpl) processRegular(regularMessage *ab.KafkaMessageRegular, r
 
 	switch regularMessage.Class {
 	case ab.KafkaMessageRegular_UNKNOWN:
-		logger.Panicf("[channel: %s] Kafka message of type UNKNOWN should have been processed already", chain.ChannelID())
+		// 遇到未知类型的消息，这应该是处理过的，直接报错
+		logger.Panicf("[通道: %s] 类型为UNKNOWN的Kafka消息应已被处理", chain.ChannelID())
 
 	case ab.KafkaMessageRegular_NORMAL:
-		// This is a message that is re-validated and re-ordered
+		// 处理常规消息，需要重新验证和排序
 		if regularMessage.OriginalOffset != 0 {
-			logger.Debugf("[channel: %s] Received re-submitted normal message with original offset %d", chain.ChannelID(), regularMessage.OriginalOffset)
+			// 收到重提交的常规消息，记录原始偏移量
+			logger.Debugf("[通道: %s] 收到原始偏移量为 %d 的重提交常规消息", chain.ChannelID(), regularMessage.OriginalOffset)
 
-			// But we've reprocessed it already
+			// 如果已经处理过该偏移量的消息，则丢弃
 			if regularMessage.OriginalOffset <= chain.lastOriginalOffsetProcessed {
 				logger.Debugf(
-					"[channel: %s] OriginalOffset(%d) <= LastOriginalOffsetProcessed(%d), message has been consumed already, discard",
+					"[通道: %s] 原始偏移量(%d) <= 最后处理的偏移量(%d)，消息已被消费，丢弃",
 					chain.ChannelID(), regularMessage.OriginalOffset, chain.lastOriginalOffsetProcessed)
 				return nil
 			}
 
+			// 第一次接收到该重提交消息
 			logger.Debugf(
-				"[channel: %s] OriginalOffset(%d) > LastOriginalOffsetProcessed(%d), "+
-					"this is the first time we receive this re-submitted normal message",
+				"[通道: %s] 原始偏移量(%d) > 最后处理的偏移量(%d)，首次接收到重提交的常规消息",
 				chain.ChannelID(), regularMessage.OriginalOffset, chain.lastOriginalOffsetProcessed)
-
-			// In case we haven't reprocessed the message, there's no need to differentiate it from those
-			// messages that will be processed for the first time.
 		}
 
-		// The config sequence has advanced
+		// 配置序列已前进，需要重新验证, 重新推送到kafka排序
 		if regularMessage.ConfigSeq < seq {
-			logger.Debugf("[channel: %s] Config sequence has advanced since this normal message got validated, re-validating", chain.ChannelID())
+			logger.Debugf("[通道: %s] 自常规消息验证以来配置序列已前进，重新验证", chain.ChannelID())
 			configSeq, err := chain.ProcessNormalMsg(env)
 			if err != nil {
-				return fmt.Errorf("discarding bad normal message because = %s", err)
+				return fmt.Errorf("丢弃无效的常规消息，因为 %s", err)
 			}
 
-			logger.Debugf("[channel: %s] Normal message is still valid, re-submit", chain.ChannelID())
-
-			// For both messages that are ordered for the first time or re-ordered, we set original offset
-			// to current received offset and re-order it.
+			logger.Debugf("[通道: %s] 常规消息仍有效，重新提交", chain.ChannelID())
+			// 无论首次还是重排，都设置原始偏移量并重新排序
 			if err := chain.order(env, configSeq, receivedOffset); err != nil {
-				return fmt.Errorf("error re-submitting normal message because = %s", err)
+				return fmt.Errorf("重新提交常规消息时出错，因为 %s", err)
 			}
-
 			return nil
 		}
 
-		// Any messages coming in here may or may not have been re-validated
-		// and re-ordered, BUT they are definitely valid here
-
-		// advance lastOriginalOffsetProcessed if message is re-validated and re-ordered
+		// 此处的消息已被验证为有效
+		// 更新lastOriginalOffsetProcessed，如果消息被重新验证和排序
 		offset := regularMessage.OriginalOffset
 		if offset == 0 {
 			offset = chain.lastOriginalOffsetProcessed
 		}
-
 		commitNormalMsg(env, offset)
 
 	case ab.KafkaMessageRegular_CONFIG:
-		// This is a message that is re-validated and re-ordered
+		// 处理配置消息，同样需要重新验证和排序
 		if regularMessage.OriginalOffset != 0 {
-			logger.Debugf("[channel: %s] Received re-submitted config message with original offset %d", chain.ChannelID(), regularMessage.OriginalOffset)
+			// 收到重提交的配置消息，记录原始偏移量
+			logger.Debugf("[通道: %s] 收到原始偏移量为 %d 的重提交配置消息", chain.ChannelID(), regularMessage.OriginalOffset)
 
-			// But we've reprocessed it already
+			// 如果已处理过，则丢弃
 			if regularMessage.OriginalOffset <= chain.lastOriginalOffsetProcessed {
 				logger.Debugf(
-					"[channel: %s] OriginalOffset(%d) <= LastOriginalOffsetProcessed(%d), message has been consumed already, discard",
+					"[通道: %s] 原始偏移量(%d) <= 最后处理的偏移量(%d)，消息已被消费，丢弃",
 					chain.ChannelID(), regularMessage.OriginalOffset, chain.lastOriginalOffsetProcessed)
 				return nil
 			}
 
+			// 首次接收到重提交的配置消息
 			logger.Debugf(
-				"[channel: %s] OriginalOffset(%d) > LastOriginalOffsetProcessed(%d), "+
-					"this is the first time we receive this re-submitted config message",
+				"[通道: %s] 原始偏移量(%d) > 最后处理的偏移量(%d)，首次接收到重提交的配置消息",
 				chain.ChannelID(), regularMessage.OriginalOffset, chain.lastOriginalOffsetProcessed)
 
-			if regularMessage.OriginalOffset == chain.lastResubmittedConfigOffset && // This is very last resubmitted config message
-				regularMessage.ConfigSeq == seq { // AND we don't need to resubmit it again
-				logger.Debugf("[channel: %s] Config message with original offset %d is the last in-flight resubmitted message"+
-					"and it does not require revalidation, unblock ingress messages now", chain.ChannelID(), regularMessage.OriginalOffset)
-				chain.reprocessConfigComplete() // Therefore, we could finally unblock broadcast
+			// 如果是最后一个重提交的配置消息且无需再次验证，则解除入口消息阻塞
+			if regularMessage.OriginalOffset == chain.lastResubmittedConfigOffset &&
+				regularMessage.ConfigSeq == seq {
+				logger.Debugf("[通道: %s] 原始偏移量为 %d 的配置消息是最后的待重处理消息，且无需重新验证，现在解除入口消息阻塞",
+					chain.ChannelID(), regularMessage.OriginalOffset)
+				chain.reprocessConfigComplete()
 			}
 
-			// Somebody resubmitted message at offset X, whereas we didn't. This is due to non-determinism where
-			// that message was considered invalid by us during re-validation, however somebody else deemed it to
-			// be valid, and resubmitted it. We need to advance lastResubmittedConfigOffset in this case in order
-			// to enforce consistency across the network.
+			// 为了网络一致性，更新lastResubmittedConfigOffset
 			if chain.lastResubmittedConfigOffset < regularMessage.OriginalOffset {
 				chain.lastResubmittedConfigOffset = regularMessage.OriginalOffset
 			}
 		}
 
-		// The config sequence has advanced
+		// 配置序列已前进，需要重新验证
 		if regularMessage.ConfigSeq < seq {
-			logger.Debugf("[channel: %s] Config sequence has advanced since this config message got validated, re-validating", chain.ChannelID())
+			logger.Debugf("[通道: %s] 自配置消息验证以来配置序列已前进，重新验证", chain.ChannelID())
 			configEnv, configSeq, err := chain.ProcessConfigMsg(env)
 			if err != nil {
-				return fmt.Errorf("rejecting config message because = %s", err)
+				return fmt.Errorf("拒绝配置消息，因为 %s", err)
 			}
 
-			// For both messages that are ordered for the first time or re-ordered, we set original offset
-			// to current received offset and re-order it.
+			// 重新排序配置消息
 			if err := chain.configure(configEnv, configSeq, receivedOffset); err != nil {
-				return fmt.Errorf("error re-submitting config message because = %s", err)
+				return fmt.Errorf("重新提交配置消息时出错，因为 %s", err)
 			}
-
-			logger.Debugf("[channel: %s] Resubmitted config message with offset %d, block ingress messages", chain.ChannelID(), receivedOffset)
-			chain.lastResubmittedConfigOffset = receivedOffset // Keep track of last resubmitted message offset
-			chain.reprocessConfigPending()                     // Begin blocking ingress messages
-
+			logger.Debugf("[通道: %s] 重提交偏移量为 %d 的配置消息，阻止入口消息", chain.ChannelID(), receivedOffset)
+			chain.lastResubmittedConfigOffset = receivedOffset // 记录最后重提交的消息偏移量
+			chain.reprocessConfigPending()                     // 开始阻止入口消息
 			return nil
 		}
 
-		// Any messages coming in here may or may not have been re-validated
-		// and re-ordered, BUT they are definitely valid here
-
-		// advance lastOriginalOffsetProcessed if message is re-validated and re-ordered
+		// 此处的消息已被验证为有效
+		// 更新lastOriginalOffsetProcessed，如果消息被重新验证和排序
 		offset := regularMessage.OriginalOffset
 		if offset == 0 {
 			offset = chain.lastOriginalOffsetProcessed
 		}
-
 		commitConfigMsg(env, offset)
 
 	default:
-		return errors.Errorf("unsupported regular kafka message type: %v", regularMessage.Class.String())
+		// 不支持的常规Kafka消息类型
+		return errors.Errorf("不支持的常规Kafka消息类型: %v", regularMessage.Class.String())
 	}
 
 	return nil
@@ -1162,7 +1176,7 @@ func (chain *chainImpl) processTimeToCut(ttcMessage *ab.KafkaMessageTimeToCut, r
 //
 // 功能:
 //   - 首先，使用 protoutil 库将元数据编码为字节流。
-//   - 然后，调用底层 consenter 支持的 WriteBlock 方法，将区块及编码后的元数据写入区块链。
+//   - 然后，调用底层 consenter 支持的 WriteBlock 方法，将区块及编码后的元数据写入最佳到区块链的结构中(此时并没有写入文件的操作)。
 //   - 最后，更新与通道相关的指标，记录最后持久化的偏移量，用于监控和跟踪。
 func (chain *chainImpl) WriteBlock(block *cb.Block, metadata *ab.KafkaMetadata) {
 	chain.ConsenterSupport.WriteBlock(block, protoutil.MarshalOrPanic(metadata))
@@ -1276,6 +1290,7 @@ func setupChannelConsumerForChannel(retryOptions localconfig.Retry, haltChan cha
 }
 
 // 使用给定的重试选项为指定通道生产者设置父级消费者(先创建一个消费者的连接, 但是不指定连接到哪个主题和分区, 后面动态创建)。
+// 默认情况下每个消费者实例都是独立的，即每个实例都会创建一个唯一的消费者组（内部生成）。这意味着，如果不显式设置消费者组ID，每次创建的消费者实例都将独自消费所有分区的消息
 // 参数:
 //   - retryOptions: 控制重试逻辑的本地配置。
 //   - haltChan: 用于通知应停止重试的通道。

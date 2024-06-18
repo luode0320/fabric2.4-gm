@@ -122,13 +122,17 @@ func (fl *FileLedger) Height() uint64 {
 	return info.Height
 }
 
-// Append a new block to the ledger
+// Append 向账本追加一个新区块
 func (fl *FileLedger) Append(block *cb.Block) error {
+	// 调用blockStore的AddBlock方法将新区块添加到账本存储中
 	err := fl.blockStore.AddBlock(block)
 	if err == nil {
+		// 如果区块添加成功，关闭当前的信号通道并重新初始化一个新的信号通道
+		// 这通常用于通知等待的goroutine区块追加已完成
 		close(fl.signal)
 		fl.signal = make(chan struct{})
 	}
+	// 返回添加区块操作的错误状态
 	return err
 }
 

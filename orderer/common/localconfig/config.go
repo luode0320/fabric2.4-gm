@@ -33,25 +33,58 @@ type TopLevel struct {
 	Admin                Admin
 }
 
-// General contains config which should be common among all orderer types.
+// General 包含了应用于所有排序服务类型通用的配置信息。
 type General struct {
-	ListenAddress     string
-	ListenPort        uint16
-	TLS               TLS
-	Cluster           Cluster
-	Keepalive         Keepalive
+	// ListenAddress 指定了排序服务监听的网络地址。
+	ListenAddress string
+
+	// ListenPort 指定了排序服务监听的端口号。
+	ListenPort uint16
+
+	// TLS 包含了Transport Layer Security (TLS) 相关的配置信息，用于安全通信。
+	TLS TLS
+
+	// Cluster 包含了集群间通信的配置细节。
+	Cluster Cluster
+
+	// Keepalive 定义了保持活动连接的策略，以防网络空闲时连接中断。
+	Keepalive Keepalive
+
+	// ConnectionTimeout 设定了对外部连接建立的超时时间。
 	ConnectionTimeout time.Duration
-	GenesisMethod     string // For compatibility only, will be replaced by BootstrapMethod
-	GenesisFile       string // For compatibility only, will be replaced by BootstrapFile
-	BootstrapMethod   string
-	BootstrapFile     string
-	Profile           Profile
-	LocalMSPDir       string
-	LocalMSPID        string
-	BCCSP             *bccsp.FactoryOpts
-	Authentication    Authentication
-	MaxRecvMsgSize    int32
-	MaxSendMsgSize    int32
+
+	// GenesisMethod 是遗留字段，仅为了兼容性保留，未来将由BootstrapMethod替代，用于指示创世区块的生成方法。
+	GenesisMethod string
+
+	// GenesisFile 是遗留字段，仅为了兼容性保留，未来将由BootstrapFile替代，指定了创世区块或引导配置文件的路径。
+	GenesisFile string
+
+	// BootstrapMethod 指定了启动排序服务时使用的引导方法。
+	BootstrapMethod string
+
+	// BootstrapFile 指定了排序服务启动时加载的引导配置文件路径。
+	BootstrapFile string
+
+	// Profile 配置了性能剖析相关设置。
+	Profile Profile
+
+	// LocalMSPDir 指向了本地成员服务提供者(MSP)的目录路径。
+	LocalMSPDir string
+
+	// LocalMSPID 指定了排序服务所属的本地MSP的标识符。
+	LocalMSPID string
+
+	// BCCSP 指定了区块链加密服务提供者(BCCSP)的配置选项，用于加密和解密操作。
+	BCCSP *bccsp.FactoryOpts
+
+	// Authentication 包含了身份验证相关的配置信息。
+	Authentication Authentication
+
+	// MaxRecvMsgSize 设定了可接收消息的最大尺寸限制，单位为字节。
+	MaxRecvMsgSize int32
+
+	// MaxSendMsgSize 设定了可发送消息的最大尺寸限制，单位为字节。
+	MaxSendMsgSize int32
 }
 
 type Cluster struct {
@@ -225,7 +258,7 @@ type Consensus struct {
 	SnapDir string
 }
 
-// Defaults carries the default orderer configuration values.
+// Defaults 携带默认的orderer配置值。
 var Defaults = TopLevel{
 	General: General{
 		ListenAddress:   "127.0.0.1",

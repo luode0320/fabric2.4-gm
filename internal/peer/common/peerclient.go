@@ -194,15 +194,16 @@ func GetClientCertificate() (tls.Certificate, error) {
 	return cert, nil
 }
 
-// GetDeliverClient returns a new deliver client. If both the address and
-// tlsRootCertFile are not provided, the target values for the client are taken
-// from the configuration settings for "peer.address" and
-// "peer.tls.rootcert.file"
+// GetDeliverClient 返回一个新的交付（Deliver）客户端。如果未提供地址（address）和
+// TLS根证书文件（tlsRootCertFile），则客户端的目标地址值将从配置设置中获取，
+// 分别对应于"peer.address"和"peer.tls.rootcert.file"。
 func GetDeliverClient(address, tlsRootCertFile string) (pb.Deliver_DeliverClient, error) {
+	// 根据提供的地址和TLS根证书文件创建一个新的Peer客户端，如果创建过程中出错，则返回错误
 	peerClient, err := newPeerClient(address, tlsRootCertFile)
 	if err != nil {
 		return nil, err
 	}
+	// 通过Peer客户端获取Deliver服务客户端
 	return peerClient.Deliver()
 }
 

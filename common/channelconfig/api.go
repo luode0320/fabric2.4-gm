@@ -195,29 +195,27 @@ type ApplicationCapabilities interface {
 	KeyLevelEndorsement() bool
 }
 
-// OrdererCapabilities defines the capabilities for the orderer portion of a channel
+// OrdererCapabilities 定义了通道中订单部分的功能特性接口
 type OrdererCapabilities interface {
-	// PredictableChannelTemplate specifies whether the v1.0 undesirable behavior of setting the /Channel
-	// group's mod_policy to "" and copy versions from the orderer system channel config should be fixed or not.
+	// PredictableChannelTemplate 指定是否修复了v1.0中不期望的行为，该行为是将/Channel组的mod_policy设置为""
+	// 并从订单系统通道配置复制版本。如果应修复此行为，则返回true。
 	PredictableChannelTemplate() bool
 
-	// Resubmission specifies whether the v1.0 non-deterministic commitment of tx should be fixed by re-submitting
-	// the re-validated tx.
+	// Resubmission 指定是否通过重新提交经过重新验证的交易来修复v1.0中非确定性的交易提交问题。
+	// 如果应启用此修复以确保交易提交的确定性，则返回true。
 	Resubmission() bool
 
-	// Supported returns an error if there are unknown capabilities in this channel which are required
+	// Supported 检查此通道中是否存在未知的功能特性，并在这些未知特性为必需时返回错误。
 	Supported() error
 
-	// ExpirationCheck specifies whether the orderer checks for identity expiration checks
-	// when validating messages
+	// ExpirationCheck 指定订单者在验证消息时是否执行标识过期检查。
 	ExpirationCheck() bool
 
-	// ConsensusTypeMigration checks whether the orderer permits a consensus-type migration.
+	// ConsensusTypeMigration 检查订单者是否允许进行共识类型迁移。
 	ConsensusTypeMigration() bool
 
-	// UseChannelCreationPolicyAsAdmins checks whether the orderer should use more sophisticated
-	// channel creation logic using channel creation policy as the Admins policy if
-	// the creation transaction appears to support it.
+	// UseChannelCreationPolicyAsAdmins 检查订单者是否应使用更复杂的通道创建逻辑，
+	// 即当创建交易看似支持时，使用通道创建策略作为Admins策略。
 	UseChannelCreationPolicyAsAdmins() bool
 }
 

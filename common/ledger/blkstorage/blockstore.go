@@ -54,15 +54,21 @@ func newBlockStore(id string, conf *Conf, indexConfig *IndexConfig,
 	return &BlockStore{id, conf, fileMgr, ledgerStats}, nil
 }
 
-// AddBlock adds a new block
+// AddBlock 向存储中添加一个新区块
 func (store *BlockStore) AddBlock(block *common.Block) error {
-	// track elapsed time to collect block commit time
+	// 记录开始添加区块的时间，以便计算区块提交所需时间
 	startBlockCommit := time.Now()
+
+	// 调用fileMgr的addBlock方法实际执行区块的添加操作
 	result := store.fileMgr.addBlock(block)
+
+	// 计算添加区块操作消耗的时间
 	elapsedBlockCommit := time.Since(startBlockCommit)
 
+	// 更新区块统计信息，包括区块高度及区块提交耗时
 	store.updateBlockStats(block.Header.Number, elapsedBlockCommit)
 
+	// 返回添加区块操作的结果，即是否有错误发生
 	return result
 }
 

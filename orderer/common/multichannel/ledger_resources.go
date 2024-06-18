@@ -16,19 +16,32 @@ import (
 	"github.com/pkg/errors"
 )
 
-// checkResources makes sure that the channel config is compatible with this binary and logs sanity checks
+// 确保通道配置与当前二进制版本兼容，并记录基本的合理性检查日志。
+// 参数res是通道配置的资源集合。
 func checkResources(res channelconfig.Resources) error {
+	// 记录通道配置的合理性检查日志，帮助进行配置的初步诊断。
 	channelconfig.LogSanityChecks(res)
+
+	// 尝试获取通道的排序服务配置。
 	oc, ok := res.OrdererConfig()
 	if !ok {
-		return errors.New("config does not contain orderer config")
+		// 如果找不到排序服务配置，则返回错误。
+		return errors.New("配置中不包含排序服务配置")
 	}
+
+	// 检查排序服务配置所要求的能力是否被当前系统支持。
 	if err := oc.Capabilities().Supported(); err != nil {
-		return errors.WithMessagef(err, "config requires unsupported orderer capabilities: %s", err)
+		// 如果发现不支持的能力，则以错误消息的形式包裹原错误并返回。
+		return errors.WithMessagef(err, "配置要求了不被支持的排序服务能力: %s", err)
 	}
+
+	// 检查通道配置整体所要求的能力是否被当前系统支持。
 	if err := res.ChannelConfig().Capabilities().Supported(); err != nil {
-		return errors.WithMessagef(err, "config requires unsupported channel capabilities: %s", err)
+		// 如果发现不支持的能力，则以错误消息的形式包裹原错误并返回。
+		return errors.WithMessagef(err, "配置要求了不被支持的通道能力: %s", err)
 	}
+
+	// 如果所有检查均通过，则返回nil，表示没有错误。
 	return nil
 }
 
@@ -49,6 +62,9 @@ type configResources struct {
 	bccsp bccsp.BCCSP
 }
 
+// CreateBundle 根据给定的通道ID和配置结构创建一个通道配置Bundle实例。
+// 这个Bundle封装了通道的各种配置信息，如排序服务、锚节点、MSP等，
+// 并提供了访问这些配置信息的便捷方法。bccsp参数用于加密相关的操作。
 func (cr *configResources) CreateBundle(channelID string, config *common.Config) (*channelconfig.Bundle, error) {
 	return channelconfig.NewBundle(channelID, config, cr.bccsp)
 }

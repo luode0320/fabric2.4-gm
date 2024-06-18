@@ -39,16 +39,16 @@ var ErrMaintenanceMode = errors.New("maintenance mode")
 type Classification int
 
 const (
-	// NormalMsg is the class of standard (endorser or otherwise non-config) messages.
-	// Messages of this type should be processed by ProcessNormalMsg.
+	// NormalMsg 是标准消息（背书或其他非配置类型）的类别。
+	// 此类别的消息应由ProcessNormalMsg方法处理。
 	NormalMsg Classification = iota
 
-	// ConfigUpdateMsg indicates messages of type CONFIG_UPDATE.
-	// Messages of this type should be processed by ProcessConfigUpdateMsg.
+	// ConfigUpdateMsg 表示类型为CONFIG_UPDATE的消息。
+	// 此类别的消息应由ProcessConfigUpdateMsg方法处理。
 	ConfigUpdateMsg
 
-	// ConfigMsg indicates message of type ORDERER_TRANSACTION or CONFIG.
-	// Messages of this type should be processed by ProcessConfigMsg
+	// ConfigMsg 表示类型为ORDERER_TRANSACTION或CONFIG的消息。
+	// 此类别的消息应由ProcessConfigMsg方法处理。
 	ConfigMsg
 )
 

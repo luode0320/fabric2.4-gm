@@ -36,7 +36,7 @@ type StandardChannelSupport interface {
 	// Signer returns the signer for this orderer
 	Signer() identity.SignerSerializer
 
-	// ProposeConfigUpdate 接收CONFIG_UPDATE类型的信封并生成 ConfigEnvelope 作为CONFIG消息的信封负载数据
+	// ProposeConfigUpdate 使用底层configtx.Validator以及consensus.MetadataValidator验证配置更新。
 	ProposeConfigUpdate(configtx *cb.Envelope) (*cb.ConfigEnvelope, error)
 
 	OrdererConfig() (channelconfig.Orderer, bool)
@@ -78,18 +78,20 @@ func CreateStandardChannelFilters(filterSupport channelconfig.Resources, config 
 	return NewRuleSet(rules)
 }
 
-// ClassifyMsg inspects the message to determine which type of processing is necessary
+// ClassifyMsg 检查消息以确定需要进行哪种类型的处理
 func (s *StandardChannel) ClassifyMsg(chdr *cb.ChannelHeader) Classification {
 	switch chdr.Type {
 	case int32(cb.HeaderType_CONFIG_UPDATE):
+		// 配置更新消息，需要特殊处理以更新通道配置
 		return ConfigUpdateMsg
 	case int32(cb.HeaderType_ORDERER_TRANSACTION):
-		// In order to maintain backwards compatibility, we must classify these messages
+		// 为了保持向后兼容性，我们需将这些来自排序服务的消息归类为配置消息处理
 		return ConfigMsg
 	case int32(cb.HeaderType_CONFIG):
-		// In order to maintain backwards compatibility, we must classify these messages
+		// 同样为了向后兼容，原配置类型消息也应视为配置消息处理
 		return ConfigMsg
 	default:
+		// 非上述特殊类型，视为普通消息处理
 		return NormalMsg
 	}
 }
@@ -138,7 +140,7 @@ func (s *StandardChannel) ProcessConfigUpdateMsg(env *cb.Envelope) (config *cb.E
 		return nil, 0, errors.WithMessage(err, "现有通道的配置更新未通过初始检查")
 	}
 
-	// 接收CONFIG_UPDATE类型的信封并生成 ConfigEnvelope 作为CONFIG消息的信封负载数据
+	// 使用底层configtx.Validator以及consensus.MetadataValidator验证配置更新。
 	configEnvelope, err := s.support.ProposeConfigUpdate(env)
 	if err != nil {
 		return nil, 0, errors.WithMessagef(err, "将配置更新应用于现有通道时出错 '%s'", s.support.ChannelID())
@@ -167,16 +169,21 @@ func (s *StandardChannel) ProcessConfigUpdateMsg(env *cb.Envelope) (config *cb.E
 	return config, seq, nil
 }
 
-// ProcessConfigMsg takes an envelope of type `HeaderType_CONFIG`, unpacks the `ConfigEnvelope` from it
-// extracts the `ConfigUpdate` from `LastUpdate` field, and calls `ProcessConfigUpdateMsg` on it.
+// ProcessConfigMsg 处理类型为`HeaderType_CONFIG`的信封，从中拆包出`ConfigEnvelope`，
+// 然后从`LastUpdate`字段提取`ConfigUpdate`，并对其调用`ProcessConfigUpdateMsg`方法进行处理。
 func (s *StandardChannel) ProcessConfigMsg(env *cb.Envelope) (config *cb.Envelope, configSeq uint64, err error) {
-	logger.Debugf("Processing config message for channel %s", s.support.ChannelID())
+	logger.Debugf("正在处理通道 %s 的配置消息", s.support.ChannelID())
 
+	// 初始化一个ConfigEnvelope实例以存储解码后的配置信封
 	configEnvelope := &cb.ConfigEnvelope{}
+
+	// 使用protoutil.UnmarshalEnvelopeOfType解码信封，预期信封类型为配置类型
+	// 若解码成功，则继续；否则直接返回错误
 	_, err = protoutil.UnmarshalEnvelopeOfType(env, cb.HeaderType_CONFIG, configEnvelope)
 	if err != nil {
 		return
 	}
 
+	// 调用ProcessConfigUpdateMsg处理从ConfigEnvelope中提取的ConfigUpdate
 	return s.ProcessConfigUpdateMsg(configEnvelope.LastUpdate)
 }

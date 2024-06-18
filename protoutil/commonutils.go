@@ -244,30 +244,39 @@ func IsConfigBlock(block *cb.Block) bool {
 	return cb.HeaderType(hdr.Type) == cb.HeaderType_CONFIG || cb.HeaderType(hdr.Type) == cb.HeaderType_ORDERER_TRANSACTION
 }
 
-// ChannelHeader returns the *cb.ChannelHeader for a given *cb.Envelope.
+// ChannelHeader 根据给定的*cb.Envelope返回对应的*cb.ChannelHeader。
+// 如果提取过程中出现任何错误，如结构缺失或解码失败，函数将返回错误信息。
 func ChannelHeader(env *cb.Envelope) (*cb.ChannelHeader, error) {
+	// 检查Envelope是否为nil，若为nil则返回错误
 	if env == nil {
-		return nil, errors.New("Invalid envelope payload. can't be nil")
+		return nil, errors.New("无效的信封负载。不能为nil")
 	}
 
+	// 解析信封的Payload部分
 	envPayload, err := UnmarshalPayload(env.Payload)
 	if err != nil {
+		// 返回解码Payload时遇到的错误
 		return nil, err
 	}
 
+	// 验证Header是否存在
 	if envPayload.Header == nil {
-		return nil, errors.New("header not set")
+		return nil, errors.New("头部未设置")
 	}
 
+	// 验证ChannelHeader字段是否已设置
 	if envPayload.Header.ChannelHeader == nil {
-		return nil, errors.New("channel header not set")
+		return nil, errors.New("通道头部未设置")
 	}
 
+	// 解码ChannelHeader
 	chdr, err := UnmarshalChannelHeader(envPayload.Header.ChannelHeader)
 	if err != nil {
-		return nil, errors.WithMessage(err, "error unmarshalling channel header")
+		// 当解码通道头部出错时，附带错误信息返回
+		return nil, errors.WithMessage(err, "解码通道头部时出错")
 	}
 
+	// 成功返回ChannelHeader实例
 	return chdr, nil
 }
 
@@ -281,14 +290,19 @@ func ChannelID(env *cb.Envelope) (string, error) {
 	return chdr.ChannelId, nil
 }
 
-// EnvelopeToConfigUpdate is used to extract a ConfigUpdateEnvelope from an envelope of
-// type CONFIG_UPDATE
+// EnvelopeToConfigUpdate 用于从类型为CONFIG_UPDATE的信封中提取ConfigUpdateEnvelope。
 func EnvelopeToConfigUpdate(configtx *cb.Envelope) (*cb.ConfigUpdateEnvelope, error) {
+	// 初始化一个ConfigUpdateEnvelope实例用于存储解码结果
 	configUpdateEnv := &cb.ConfigUpdateEnvelope{}
+
+	// 使用UnmarshalEnvelopeOfType函数解码configtx信封，预期信封类型为CONFIG_UPDATE
+	// 若解码成功，则继续；否则返回解码过程中遇到的错误
 	_, err := UnmarshalEnvelopeOfType(configtx, cb.HeaderType_CONFIG_UPDATE, configUpdateEnv)
 	if err != nil {
 		return nil, err
 	}
+
+	// 解码成功后，返回填充了数据的ConfigUpdateEnvelope实例
 	return configUpdateEnv, nil
 }
 

@@ -144,31 +144,41 @@ func NewValidatorImpl(channelID string, config *cb.Config, namespace string, pm 
 	}, nil
 }
 
-// ProposeConfigUpdate takes in an Envelope of type CONFIG_UPDATE and produces a
-// ConfigEnvelope to be used as the Envelope Payload Data of a CONFIG message
+// ProposeConfigUpdate 接收类型为CONFIG_UPDATE的信封，并生成一个
+// ConfigEnvelope结构体，该结构体将作为CONFIG类型消息的信封有效载荷数据使用
 func (vi *ValidatorImpl) ProposeConfigUpdate(configtx *cb.Envelope) (*cb.ConfigEnvelope, error) {
 	return vi.proposeConfigUpdate(configtx)
 }
 
+// proposeConfigUpdate 是 ValidatorImpl 类型的一个内部方法，用于处理配置更新提议。
+// 它接收一个包含配置更新信息的信封(*cb.Envelope)作为输入。
 func (vi *ValidatorImpl) proposeConfigUpdate(configtx *cb.Envelope) (*cb.ConfigEnvelope, error) {
+	// 尝试将接收到的信封转换为配置更新结构体
 	configUpdateEnv, err := protoutil.EnvelopeToConfigUpdate(configtx)
 	if err != nil {
-		return nil, errors.Errorf("error converting envelope to config update: %s", err)
+		// 转换失败时返回错误
+		return nil, errors.Errorf("转换信封为配置更新时出错: %s", err)
 	}
 
+	// 验证并授权配置更新
 	configMap, err := vi.authorizeUpdate(configUpdateEnv)
 	if err != nil {
-		return nil, errors.Errorf("error authorizing update: %s", err)
+		// 授权失败时返回错误
+		return nil, errors.Errorf("授权配置更新时出错: %s", err)
 	}
 
+	// 将配置映射转换回通道组结构体
 	channelGroup, err := configMapToConfig(configMap, vi.namespace)
 	if err != nil {
-		return nil, errors.Errorf("could not turn configMap back to channelGroup: %s", err)
+		// 转换失败时返回错误
+		return nil, errors.Errorf("无法将配置映射还原为通道组: %s", err)
 	}
 
+	// 创建并返回新的配置信封，其中包含了更新后的序列号和通道组信息，
+	// 同时记录本次更新的原始信封
 	return &cb.ConfigEnvelope{
 		Config: &cb.Config{
-			Sequence:     vi.sequence + 1,
+			Sequence:     vi.sequence + 1, // 序列号递增
 			ChannelGroup: channelGroup,
 		},
 		LastUpdate: configtx,
@@ -217,7 +227,7 @@ func (vi *ValidatorImpl) ChannelID() string {
 	return vi.channelID
 }
 
-// Sequence returns the sequence number of the config
+// Sequence 返回配置的序列号
 func (vi *ValidatorImpl) Sequence() uint64 {
 	return vi.sequence
 }

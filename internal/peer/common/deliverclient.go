@@ -211,23 +211,32 @@ type ordererDeliverService struct {
 	ab.AtomicBroadcast_DeliverClient
 }
 
-// NewDeliverClientForOrderer creates a new DeliverClient from an OrdererClient
+// NewDeliverClientForOrderer 根据环境配置创建一个新的针对排序服务的DeliverClient实例。
 func NewDeliverClientForOrderer(channelID string, signer identity.SignerSerializer, bestEffort bool) (*DeliverClient, error) {
+	// 从环境变量中创建一个OrdererClient实例
 	oc, err := NewOrdererClientFromEnv()
 	if err != nil {
-		return nil, errors.WithMessage(err, "failed to create deliver client for orderer")
+		// 如果创建OrdererClient失败，则包装错误并返回
+		return nil, errors.WithMessage(err, "未能为排序服务创建传递客户端")
 	}
 
+	// 通过OrdererClient获取Deliver服务客户端
 	dc, err := oc.Deliver()
 	if err != nil {
-		return nil, errors.WithMessage(err, "failed to create deliver client for orderer")
+		// 如果创建Deliver客户端失败，则包装错误并返回
+		return nil, errors.WithMessage(err, "未能为排序服务创建传递客户端")
 	}
-	// check for client certificate and create hash if present
+
+	// 检查OrdererClient的TLS证书是否存在，若存在则计算其SHA256哈希值
 	var tlsCertHash []byte
 	if len(oc.Certificate().Certificate) > 0 {
 		tlsCertHash = util.ComputeSHA256(oc.Certificate().Certificate[0])
 	}
+
+	// 创建ordererDeliverService实例，包装原始的Deliver客户端
 	ds := &ordererDeliverService{dc}
+
+	// 初始化DeliverClient结构体，包含Signer、服务实例、通道ID、TLS证书哈希及最佳努力传递标志
 	o := &DeliverClient{
 		Signer:      signer,
 		Service:     ds,
@@ -235,6 +244,8 @@ func NewDeliverClientForOrderer(channelID string, signer identity.SignerSerializ
 		TLSCertHash: tlsCertHash,
 		BestEffort:  bestEffort,
 	}
+
+	// 成功构建后返回DeliverClient实例
 	return o, nil
 }
 

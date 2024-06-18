@@ -21,24 +21,35 @@ import (
 	"github.com/pkg/errors"
 )
 
-// ChainSupport holds the resources for a particular channel.
+// ChainSupport 为特定通道保存所需的资源。
 type ChainSupport struct {
+	// ledgerResources 持有与账本相关的资源。
 	*ledgerResources
+
+	// Processor 用于处理消息，涉及分类、验证及响应。
 	msgprocessor.Processor
+
+	// BlockWriter 提供写入区块到账本的功能。
 	*BlockWriter
+
+	// Chain 代表共识层的链，封装了共识相关的逻辑和操作。
 	consensus.Chain
+
+	// cutter 负责区块切割策略，管理交易何时被打包进新区块。
 	cutter blockcutter.Receiver
+
+	// SignerSerializer 提供了签名和序列化的能力，用于安全地处理消息。
 	identity.SignerSerializer
+
+	// BCCSP 是加密服务提供者，用于密码学操作，如签名和加密。
 	BCCSP bccsp.BCCSP
 
-	// NOTE: It makes sense to add this to the ChainSupport since the design of Registrar does not assume
-	// that there is a single consensus type at this orderer node and therefore the resolution of
-	// the consensus type too happens only at the ChainSupport level.
+	// MetadataValidator 用于验证与共识相关的元数据，确保其符合规范。
 	consensus.MetadataValidator
 
-	// The registrar is not aware of the exact type that the Chain is, e.g. etcdraft, inactive, or follower.
-	// Therefore, we let each chain report its cluster relation and status through this interface. Non cluster
-	// type chains (solo, kafka) are assigned a static reporter.
+	// StatusReporter 定义了报告链的集群关系和状态的接口。
+	// 因注册器不假设订单节点上只有一个共识类型，共识类型的解析实现在 ChainSupport 层面。
+	// 对于非集群类型链（如 solo 或 kafka），则分配一个静态报告器。
 	consensus.StatusReporter
 }
 
@@ -145,41 +156,48 @@ func (cs *ChainSupport) Validate(configEnv *cb.ConfigEnvelope) error {
 	return cs.ConfigtxValidator().Validate(configEnv)
 }
 
-// ProposeConfigUpdate validates a config update using the underlying configtx.Validator
-// and the consensus.MetadataValidator.
+// ProposeConfigUpdate 使用底层configtx.Validator以及consensus.MetadataValidator验证配置更新。
 func (cs *ChainSupport) ProposeConfigUpdate(configtx *cb.Envelope) (*cb.ConfigEnvelope, error) {
+	// 使用配置交易验证器提议配置更新，并获取更新后的配置信封
 	env, err := cs.ConfigtxValidator().ProposeConfigUpdate(configtx)
 	if err != nil {
 		return nil, err
 	}
 
+	// 根据通道ID和新的配置创建配置包
 	bundle, err := cs.CreateBundle(cs.ChannelID(), env.Config)
 	if err != nil {
 		return nil, err
 	}
 
+	// 检查配置包中的资源是否兼容
 	if err = checkResources(bundle); err != nil {
-		return nil, errors.WithMessage(err, "config update is not compatible")
+		return nil, errors.WithMessage(err, "配置更新不兼容")
 	}
 
+	// 验证新配置的有效性
 	if err = cs.ValidateNew(bundle); err != nil {
 		return nil, err
 	}
 
+	// 获取旧的排序服务配置
 	oldOrdererConfig, ok := cs.OrdererConfig()
 	if !ok {
-		logger.Panic("old config is missing orderer group")
+		logger.Panic("原始配置缺少排序服务组")
 	}
 
-	// we can remove this check since this is being validated in checkResources earlier
+	// 获取新的排序服务配置（注：此处注释提到的检查已在checkResources中完成，但保留逻辑以供理解）
 	newOrdererConfig, ok := bundle.OrdererConfig()
 	if !ok {
-		return nil, errors.New("new config is missing orderer group")
+		return nil, errors.New("新配置缺少排序服务组")
 	}
 
+	// 验证共识元数据更新的有效性
 	if err = cs.ValidateConsensusMetadata(oldOrdererConfig, newOrdererConfig, false); err != nil {
-		return nil, errors.WithMessage(err, "consensus metadata update for channel config update is invalid")
+		return nil, errors.WithMessage(err, "针对通道配置更新的共识元数据更新无效")
 	}
+
+	// 验证通过后，返回更新后的配置信封
 	return env, nil
 }
 
@@ -188,13 +206,14 @@ func (cs *ChainSupport) ConfigProto() *cb.Config {
 	return cs.ConfigtxValidator().ConfigProto()
 }
 
-// Sequence passes through to the underlying configtx.Validator
+// Sequence 方法透传到底层的configtx.Validator接口，用来获取当前的配置序列号。
+// 配置序列号通常用于追踪和标识系统配置的更新历史，确保各节点间配置状态的一致性。
 func (cs *ChainSupport) Sequence() uint64 {
 	return cs.ConfigtxValidator().Sequence()
 }
 
-// Append appends a new block to the ledger in its raw form,
-// unlike WriteBlock that also mutates its metadata.
+// Append 将新区块以原始形式追加到账本中，
+// 与 WriteBlock 不同，该操作不修改区块的元数据。
 func (cs *ChainSupport) Append(block *cb.Block) error {
 	return cs.ledgerResources.ReadWriter.Append(block)
 }

@@ -102,11 +102,16 @@ func (mcs *ConsenterSupport) CreateNextBlock(data []*cb.Envelope) *cb.Block {
 	return block
 }
 
-// WriteBlock writes data to the Blocks channel
+// WriteBlock 将数据写入Blocks通道。
+// 参数block代表待写入的区块结构体，encodedMetadataValue是待附加的编码元数据值。
+// 如果提供的元数据值不为空，则会将其序列化并添加至区块的元数据部分中的ORDERER索引位置。
+// 最后，通过调用Append方法处理区块。
 func (mcs *ConsenterSupport) WriteBlock(block *cb.Block, encodedMetadataValue []byte) {
 	if encodedMetadataValue != nil {
+		// 如果元数据值存在，则将其序列化并设置到区块的元数据ORDERER索引位置
 		block.Metadata.Metadata[cb.BlockMetadataIndex_ORDERER] = protoutil.MarshalOrPanic(&cb.Metadata{Value: encodedMetadataValue})
 	}
+	// 将处理过的区块通过Append方法进一步处理，可能是向通道发送或其它处理逻辑
 	mcs.Append(block)
 }
 
