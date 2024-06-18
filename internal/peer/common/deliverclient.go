@@ -298,22 +298,31 @@ func NewDeliverClientForPeer(channelID string, signer identity.SignerSerializer,
 	return p, nil
 }
 
+// Recv 方法从 peer 交付服务接收数据。
 func (p *peerDeliverService) Recv() (*ab.DeliverResponse, error) {
+	// 通过 gRPC 客户端的 Recv 方法尝试从 peer 交付服务接收消息。
 	pbResp, err := p.Deliver_DeliverClient.Recv()
 	if err != nil {
-		return nil, errors.Wrap(err, "error receiving from peer deliver service")
+		// 如果接收时发生错误，使用 errors.Wrap 包装原始错误，并返回。
+		return nil, errors.Wrap(err, "从 peer 交付服务接收时发生错误")
 	}
 
+	// 初始化一个 ab.DeliverResponse 结构体以准备转换并返回。
 	abResp := &ab.DeliverResponse{}
 
+	// 根据接收到的消息类型进行转换。
 	switch t := pbResp.Type.(type) {
 	case *pb.DeliverResponse_Status:
+		// 如果是状态类型，转换并设置到 abResp 中。
 		abResp.Type = &ab.DeliverResponse_Status{Status: t.Status}
 	case *pb.DeliverResponse_Block:
+		// 如果是区块类型，转换并设置到 abResp 中。
 		abResp.Type = &ab.DeliverResponse_Block{Block: t.Block}
 	default:
-		return nil, errors.Errorf("response error: unknown type %T", t)
+		// 如果遇到未知的消息类型，返回错误。
+		return nil, errors.Errorf("响应错误: 未知类型 %T", t)
 	}
 
+	// 成功处理后返回 ab.DeliverResponse 和 nil 错误。
 	return abResp, nil
 }

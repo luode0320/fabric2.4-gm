@@ -36,18 +36,18 @@ type ChainManager interface {
 
 //go:generate counterfeiter -o mock/chain.go -fake-name Chain . Chain
 
-// Chain encapsulates chain operations and data.
+// Chain 封装了链操作和数据相关的功能。
 type Chain interface {
-	// Sequence returns the current config sequence number, can be used to detect config changes
+	// Sequence 返回当前配置序列号，可用于检测配置变更
 	Sequence() uint64
 
-	// PolicyManager returns the current policy manager as specified by the chain configuration
+	// PolicyManager 返回由链配置指定的当前策略管理器
 	PolicyManager() policies.Manager
 
-	// Reader returns the chain Reader for the chain
+	// Reader 提供针对该链的区块读取器
 	Reader() blockledger.Reader
 
-	// Errored returns a channel which closes when the backing consenter has errored
+	// Errored 返回一个通道，当底层共识器发生错误时，此通道将被关闭
 	Errored() <-chan struct{}
 }
 
@@ -101,14 +101,13 @@ type Receiver interface {
 
 //go:generate counterfeiter -o mock/response_sender.go -fake-name ResponseSender . ResponseSender
 
-// ResponseSender defines the interface a handler must implement to send
-// responses.
+// ResponseSender 定义了处理器必须实现的接口，以便向客户端发送响应。
 type ResponseSender interface {
-	// SendStatusResponse sends completion status to the client.
+	// SendStatusResponse 向客户端发送完成状态。
 	SendStatusResponse(status cb.Status) error
-	// SendBlockResponse sends the block and optionally private data to the client.
+	// SendBlockResponse 向客户端发送区块数据，以及可选的私有数据。
 	SendBlockResponse(data *cb.Block, channelID string, chain Chain, signedData *protoutil.SignedData) error
-	// DataType returns the data type sent by the sender
+	// DataType 返回发送者发送的数据类型
 	DataType() string
 }
 
@@ -163,39 +162,44 @@ func NewHandler(cm ChainManager, timeWindow time.Duration, mutualTLS bool, metri
 	}
 }
 
-// Handle receives incoming deliver requests.
+// Handle 接收传入的交付请求。
 func (h *Handler) Handle(ctx context.Context, srv *Server) error {
 	addr := util.ExtractRemoteAddress(ctx)
-	logger.Debugf("Starting new deliver loop for %s", addr)
-	h.Metrics.StreamsOpened.Add(1)
-	defer h.Metrics.StreamsClosed.Add(1)
+	logger.Debugf("为 %s 启动新的交付循环", addr)
+	h.Metrics.StreamsOpened.Add(1)       // 增加打开的流计数
+	defer h.Metrics.StreamsClosed.Add(1) // 在函数结束时增加关闭的流计数
+
+	// 持续循环处理请求
 	for {
-		logger.Debugf("Attempting to read seek info message from %s", addr)
-		envelope, err := srv.Recv()
-		if err == io.EOF {
-			logger.Debugf("Received EOF from %s, hangup", addr)
-			return nil
+		logger.Debugf("尝试从 %s 读取SeekInfo消息", addr)
+		envelope, err := srv.Recv() // 从gRPC流接收数据包
+		if err == io.EOF {          // 如果收到EOF，表示客户端已关闭连接
+			logger.Debugf("从 %s 收到EOF，挂断连接", addr)
+			return nil // 正常结束循环
 		}
-		if err != nil {
-			logger.Warningf("从流读取时出错 %s: %s", addr, err)
-			return err
+		if err != nil { // 其他错误情况
+			logger.Warningf("从流 %s 读取时发生错误: %s", addr, err)
+			return err // 返回错误并结束处理
 		}
 
+		// 处理区块交付逻辑，并获取处理状态
 		status, err := h.deliverBlocks(ctx, srv, envelope)
 		if err != nil {
-			return err
+			return err // 交付区块时遇到错误，返回错误
 		}
 
+		// 向客户端发送处理状态响应
 		err = srv.SendStatusResponse(status)
-		if status != cb.Status_SUCCESS {
+		if status != cb.Status_SUCCESS { // 如果状态不是成功，可能需要处理或返回错误
 			return err
 		}
 		if err != nil {
-			logger.Warningf("Error sending to %s: %s", addr, err)
-			return err
+			logger.Warningf("向 %s 发送时出现错误: %s", addr, err)
+			return err // 发送响应时出错，返回错误
 		}
 
-		logger.Debugf("Waiting for new SeekInfo from %s", addr)
+		// 等待客户端发送新的SeekInfo请求
+		logger.Debugf("等待从 %s 收到新的SeekInfo", addr)
 	}
 }
 
@@ -206,152 +210,172 @@ func isFiltered(srv *Server) bool {
 	return false
 }
 
+// deliverBlocks 负责处理和发送区块链数据给请求的客户端。
 func (h *Handler) deliverBlocks(ctx context.Context, srv *Server, envelope *cb.Envelope) (status cb.Status, err error) {
 	addr := util.ExtractRemoteAddress(ctx)
+	// 解析信封内容，包括payload、通道头、签名头
 	payload, chdr, shdr, err := h.parseEnvelope(ctx, envelope)
 	if err != nil {
-		logger.Warningf("从解析 Envelope 信封时出错 %s: %s", addr, err)
+		logger.Warningf("从 %s 解析信封时发生错误: %s", addr, err)
 		return cb.Status_BAD_REQUEST, nil
 	}
 
+	// 根据通道ID获取对应的链实例
 	chain := h.ChainManager.GetChain(chdr.ChannelId)
 	if chain == nil {
-		// Note, we log this at DEBUG because SDKs will poll waiting for channels to be created
-		// So we would expect our log to be somewhat flooded with these
-		logger.Debugf("Rejecting deliver for %s because channel %s not found", addr, chdr.ChannelId)
+		// 如果找不到对应通道，记录调试日志，因为SDK可能会轮询等待通道创建
+		logger.Debugf("拒绝 %s 对通道 %s 的交付请求，因为通道未找到", addr, chdr.ChannelId)
 		return cb.Status_NOT_FOUND, nil
 	}
 
-	labels := []string{
-		"channel", chdr.ChannelId,
-		"filtered", strconv.FormatBool(isFiltered(srv)),
-		"data_type", srv.DataType(),
-	}
+	// 记录请求接收的指标
+	labels := []string{"通道", chdr.ChannelId, "过滤", strconv.FormatBool(isFiltered(srv)), "数据类型", srv.DataType()}
 	h.Metrics.RequestsReceived.With(labels...).Add(1)
+
 	defer func() {
-		labels := append(labels, "success", strconv.FormatBool(status == cb.Status_SUCCESS))
+		// 在请求完成时记录指标，包含成功与否的标记
+		labels = append(labels, "成功", strconv.FormatBool(status == cb.Status_SUCCESS))
 		h.Metrics.RequestsCompleted.With(labels...).Add(1)
 	}()
 
+	// 反序列化客户端发送的SeekInfo请求
 	seekInfo := &ab.SeekInfo{}
 	if err = proto.Unmarshal(payload.Data, seekInfo); err != nil {
-		logger.Warningf("[channel: %s] Received a signed deliver request from %s with malformed seekInfo payload: %s", chdr.ChannelId, addr, err)
+		logger.Warningf("[通道: %s] 从 %s 收到带有错误格式SeekInfo负载的签名交付请求: %s", chdr.ChannelId, addr, err)
 		return cb.Status_BAD_REQUEST, nil
 	}
 
+	// 根据通道的错误通知通道(若开启“最佳努力”模式则忽略错误)
 	erroredChan := chain.Errored()
 	if seekInfo.ErrorResponse == ab.SeekInfo_BEST_EFFORT {
-		// In a 'best effort' delivery of blocks, we should ignore consenter errors
-		// and continue to deliver blocks according to the client's request.
-		erroredChan = nil
-	}
-	select {
-	case <-erroredChan:
-		logger.Warningf("[channel: %s] 由于 consenter 同意者错误, 拒绝发送到节点 %s 的请求", chdr.ChannelId, addr)
-		return cb.Status_SERVICE_UNAVAILABLE, nil
-	default:
+		erroredChan = nil // 忽略共识错误
 	}
 
+	select {
+	case <-erroredChan: // 如果共识组件发生错误
+		logger.Warningf("[通道: %s] 因共识者错误，拒绝向节点 %s 发送数据的请求", chdr.ChannelId, addr)
+		return cb.Status_SERVICE_UNAVAILABLE, nil
+	default: // 继续处理请求
+	}
+
+	// 创建会话访问控制对象，用于评估客户端的访问权限
 	accessControl, err := NewSessionAC(chain, envelope, srv.PolicyChecker, chdr.ChannelId, h.ExpirationCheckFunc)
 	if err != nil {
-		logger.Warningf("[channel: %s] failed to create access control object due to %s", chdr.ChannelId, err)
+		logger.Warningf("[通道: %s] 创建访问控制对象失败，原因: %s", chdr.ChannelId, err)
 		return cb.Status_BAD_REQUEST, nil
 	}
 
+	// 评估客户端访问权限，如果未授权则返回错误
 	if err := accessControl.Evaluate(); err != nil {
-		logger.Warningf("[channel: %s] Client %s is not authorized: %s", chdr.ChannelId, addr, err)
+		logger.Warningf("[通道: %s] 客户端 %s 无权访问: %s", chdr.ChannelId, addr, err)
 		return cb.Status_FORBIDDEN, nil
 	}
 
+	// 验证SeekInfo请求中的起始和终止位置是否齐全，否则返回错误
 	if seekInfo.Start == nil || seekInfo.Stop == nil {
-		logger.Warningf("[channel: %s] Received seekInfo message from %s with missing start or stop %v, %v", chdr.ChannelId, addr, seekInfo.Start, seekInfo.Stop)
+		logger.Warningf("[通道: %s] 从 %s 收到缺少起始或终止点的seekInfo消息：%v, %v", chdr.ChannelId, addr, seekInfo.Start, seekInfo.Stop)
 		return cb.Status_BAD_REQUEST, nil
 	}
 
-	logger.Debugf("[channel: %s] Received seekInfo (%p) %v from %s", chdr.ChannelId, seekInfo, seekInfo, addr)
+	// 记录日志，显示接收到的SeekInfo详情
+	logger.Debugf("[通道: %s] 从 %s 收到 seekInfo (%p) %v", chdr.ChannelId, addr, seekInfo, seekInfo)
 
+	// 根据SeekInfo的起始位置创建迭代器
 	cursor, number := chain.Reader().Iterator(seekInfo.Start)
-	defer cursor.Close()
+	defer cursor.Close() // 确保迭代器在函数结束时关闭
+
+	// 处理SeekInfo的停止位置，确定停止的区块编号
 	var stopNum uint64
 	switch stop := seekInfo.Stop.Type.(type) {
 	case *ab.SeekPosition_Oldest:
+		// 使用链的起始高度作为停止位置
 		stopNum = number
 	case *ab.SeekPosition_Newest:
-		// when seeking only the newest block (i.e. starting
-		// and stopping at newest), don't reevaluate the ledger
-		// height as this can lead to multiple blocks being
-		// sent when only one is expected
+		// 特殊处理，如果开始和结束都指定了最新块，则直接使用当前高度
 		if proto.Equal(seekInfo.Start, seekInfo.Stop) {
 			stopNum = number
 			break
 		}
+		// 否则，使用当前高度减一作为最新块
 		stopNum = chain.Reader().Height() - 1
 	case *ab.SeekPosition_Specified:
+		// 使用指定的区块编号作为停止位置
 		stopNum = stop.Specified.Number
+		// 检查起始编号是否大于停止编号，如果是，则返回错误
 		if stopNum < number {
-			logger.Warningf("[channel: %s] Received invalid seekInfo message from %s: start number %d greater than stop number %d", chdr.ChannelId, addr, number, stopNum)
+			logger.Warningf("[通道: %s] 从 %s 收到无效的seekInfo消息：起始编号 %d 大于停止编号 %d", chdr.ChannelId, addr, number, stopNum)
 			return cb.Status_BAD_REQUEST, nil
 		}
 	}
 
 	for {
+		// 检查SeekInfo行为，如果设置为FAIL_IF_NOT_READY且请求的区块尚未准备好，则返回NOT_FOUND
 		if seekInfo.Behavior == ab.SeekInfo_FAIL_IF_NOT_READY {
 			if number > chain.Reader().Height()-1 {
 				return cb.Status_NOT_FOUND, nil
 			}
 		}
 
+		// 初始化变量用于存储下一个区块和获取状态
 		var block *cb.Block
 		var status cb.Status
 
+		// 创建迭代器通道用于异步获取下一个区块
 		iterCh := make(chan struct{})
 		go func() {
-			block, status = cursor.Next()
-			close(iterCh)
+			block, status = cursor.Next() // 异步获取下一个区块
+			close(iterCh)                 // 通知主goroutine迭代已完成
 		}()
 
 		select {
+		// 监听上下文是否被取消，如果是，则返回错误
 		case <-ctx.Done():
-			logger.Debugf("Context canceled, aborting wait for next block")
-			return cb.Status_INTERNAL_SERVER_ERROR, errors.Wrapf(ctx.Err(), "context finished before block retrieved")
+			logger.Debugf("上下文已取消，中断等待下一个区块")
+			return cb.Status_INTERNAL_SERVER_ERROR, errors.Wrapf(ctx.Err(), "上下文在获取区块前已完成")
+		// 如果通道发生错误，则中止交付请求
 		case <-erroredChan:
-			// TODO, today, the only user of the errorChan is the orderer consensus implementations.  If the peer ever reports
-			// this error, we will need to update this error message, possibly finding a way to signal what error text to return.
-			logger.Warningf("Aborting deliver for request because the backing consensus implementation indicates an error")
+			logger.Warningf("因底层共识实现指示错误，中止对请求的交付")
 			return cb.Status_SERVICE_UNAVAILABLE, nil
+		// 当迭代完成时，继续执行
 		case <-iterCh:
-			// Iterator has set the block and status vars
+			// 迭代器已设置block和status变量
 		}
 
+		// 如果读取区块时出现错误，记录错误并返回
 		if status != cb.Status_SUCCESS {
-			logger.Errorf("[channel: %s] Error reading from channel, cause was: %v", chdr.ChannelId, status)
+			logger.Errorf("[通道: %s] 从通道读取时发生错误，原因为: %v", chdr.ChannelId, status)
 			return status, nil
 		}
 
-		// increment block number to support FAIL_IF_NOT_READY deliver behavior
+		// 支持FAIL_IF_NOT_READY行为，递增区块编号
 		number++
 
+		// 重新评估客户端访问权限，若权限被撤销，则返回FORBIDDEN
 		if err := accessControl.Evaluate(); err != nil {
-			logger.Warningf("[channel: %s] Client authorization revoked for deliver request from %s: %s", chdr.ChannelId, addr, err)
+			logger.Warningf("[通道: %s] 来自 %s 的交付请求客户端授权被撤销: %s", chdr.ChannelId, addr, err)
 			return cb.Status_FORBIDDEN, nil
 		}
 
-		logger.Debugf("[channel: %s] Delivering block [%d] for (%p) for %s", chdr.ChannelId, block.Header.Number, seekInfo, addr)
+		// 记录日志，显示正在发送的区块信息
+		logger.Debugf("[通道: %s] 为 %s 交付区块 [%d]（%p）", chdr.ChannelId, addr, block.Header.Number, seekInfo)
 
+		// 准备SignedData对象，并发送区块响应给客户端
 		signedData := &protoutil.SignedData{Data: envelope.Payload, Identity: shdr.Creator, Signature: envelope.Signature}
 		if err := srv.SendBlockResponse(block, chdr.ChannelId, chain, signedData); err != nil {
-			logger.Warningf("[channel: %s] Error sending to %s: %s", chdr.ChannelId, addr, err)
+			logger.Warningf("[通道: %s] 向 %s 发送时发生错误: %s", chdr.ChannelId, addr, err)
 			return cb.Status_INTERNAL_SERVER_ERROR, err
 		}
 
+		// 更新发送的区块计数指标
 		h.Metrics.BlocksSent.With(labels...).Add(1)
 
+		// 如果已达到停止的区块编号，则退出循环
 		if stopNum == block.Header.Number {
 			break
 		}
 	}
 
-	logger.Debugf("[channel: %s] Done delivering to %s for (%p)", chdr.ChannelId, addr, seekInfo)
+	logger.Debugf("[频道: %s] 已完成向 %s 的传送 (%p)", chdr.ChannelId, addr, seekInfo)
 
 	return cb.Status_SUCCESS, nil
 }
