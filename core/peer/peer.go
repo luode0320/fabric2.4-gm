@@ -113,7 +113,7 @@ func (p *Peer) updateTrustedRoots(cm channelconfig.Resources) {
 //  Deliver service support structs for the peer
 //
 
-// DeliverChainManager provides access to a channel for performing deliver
+// DeliverChainManager 提供对执行交付的通道的访问
 type DeliverChainManager struct {
 	Peer *Peer
 }

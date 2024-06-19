@@ -250,18 +250,22 @@ func (s *DeliverServer) DeliverFiltered(srv peer.Deliver_DeliverFilteredServer) 
 	return s.DeliverHandler.Handle(srv.Context(), deliverServer)
 }
 
-// Deliver sends a stream of blocks to a client after commitment
+// Deliver 向客户端发送经过提交确认后的区块流
 func (s *DeliverServer) Deliver(srv peer.Deliver_DeliverServer) (err error) {
-	logger.Debugf("Starting new Deliver handler")
-	defer dumpStacktraceOnPanic()
-	// getting policy checker based on resources.Event_Block resource name
+	logger.Debugf("启动新的 Deliver 处理器") // Debug日志记录新处理器的启动
+	defer dumpStacktraceOnPanic()     // 确保在发生panic时输出堆栈跟踪
+
+	// 根据资源名resources.Event_Block获取策略检查器
 	deliverServer := &deliver.Server{
+		// 设置策略检查器，用于验证请求是否符合访问区块资源的策略
 		PolicyChecker: s.PolicyCheckerProvider(resources.Event_Block),
-		Receiver:      srv,
-		ResponseSender: &blockResponseSender{
+		Receiver:      srv, // 接收来自客户端的请求
+		ResponseSender: &blockResponseSender{ // 实例化响应发送器，用于向客户端发送区块
 			Deliver_DeliverServer: srv,
 		},
 	}
+
+	// 调用DeliverHandler处理函数来处理srv上下文中的交付请求
 	return s.DeliverHandler.Handle(srv.Context(), deliverServer)
 }
 

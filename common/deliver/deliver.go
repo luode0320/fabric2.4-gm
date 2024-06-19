@@ -29,7 +29,7 @@ var logger = flogging.MustGetLogger("common.deliver")
 
 //go:generate counterfeiter -o mock/chain_manager.go -fake-name ChainManager . ChainManager
 
-// ChainManager provides a way for the Handler to look up the Chain.
+// ChainManager 为处理程序提供了一种查找链的方法。
 type ChainManager interface {
 	GetChain(chainID string) Chain
 }
@@ -94,7 +94,7 @@ type Handler struct {
 
 //go:generate counterfeiter -o mock/receiver.go -fake-name Receiver . Receiver
 
-// Receiver is used to receive enveloped seek requests.
+// Receiver 用于接收封装的查找请求。
 type Receiver interface {
 	Recv() (*cb.Envelope, error)
 }
@@ -118,8 +118,8 @@ type Filtered interface {
 	IsFiltered() bool
 }
 
-// Server is a polymorphic structure to support generalization of this handler
-// to be able to deliver different type of responses.
+// Server 服务器是一个多态结构，以支持此处理程序的泛化
+// 能够提供不同类型的响应。
 type Server struct {
 	Receiver
 	PolicyChecker

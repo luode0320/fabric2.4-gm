@@ -144,13 +144,11 @@ func (c *Channel) Reader() blockledger.Reader {
 	return fileledger.NewFileLedger(fileLedgerBlockStore{c.ledger})
 }
 
-// Errored returns a channel that can be used to determine if a backing
-// resource has errored. At this point in time, the peer does not have any
-// error conditions that lead to this function signaling that an error has
-// occurred.
+// Errored 返回一个通道，该通道可用于确定是否支持资源出错。在这个时间点上，对等体没有任何
+// 导致此函数发出错误信号的错误条件发生。
 func (c *Channel) Errored() <-chan struct{} {
-	// If this is ever updated to return a real channel, the error message
-	// in deliver.go around this channel closing should be updated.
+	// 如果此更新为返回真实通道，则错误消息
+	// 在delaver.go周围这个渠道关闭应该更新。
 	return nil
 }
 

@@ -72,41 +72,54 @@ func (i *fileLedgerIterator) Close() {
 	i.commonIterator.Close()
 }
 
-// Iterator returns an Iterator, as specified by an ab.SeekInfo message, and its
-// starting block number
+// Iterator 根据 ab.SeekInfo 消息指定的方式返回一个迭代器，以及迭代器的起始区块编号。
 func (fl *FileLedger) Iterator(startPosition *ab.SeekPosition) (blockledger.Iterator, uint64) {
-	var startingBlockNumber uint64
+	var startingBlockNumber uint64 // 初始化起始区块编号
+
+	// 根据 SeekPosition 的不同类型设定起始区块编号
 	switch start := startPosition.Type.(type) {
 	case *ab.SeekPosition_Oldest:
+		// 如果是查找最旧的区块，则从0开始
 		startingBlockNumber = 0
 	case *ab.SeekPosition_Newest:
+		// 获取区块链信息以确定最新的区块编号
 		info, err := fl.blockStore.GetBlockchainInfo()
 		if err != nil {
+			// 如果获取信息失败，则触发panic
 			logger.Panic(err)
 		}
+		// 如果系统正在进行快照恢复，最新块需特殊处理
 		newestBlockNumber := info.Height - 1
 		if info.BootstrappingSnapshotInfo != nil && newestBlockNumber == info.BootstrappingSnapshotInfo.LastBlockInSnapshot {
 			newestBlockNumber = info.Height
 		}
 		startingBlockNumber = newestBlockNumber
 	case *ab.SeekPosition_Specified:
+		// 指定区块编号
 		startingBlockNumber = start.Specified.Number
+		// 检查所指定的区块编号是否有效
 		height := fl.Height()
 		if startingBlockNumber > height {
+			// 如果指定的区块编号超出链高，则返回一个表示未找到的迭代器
 			return &blockledger.NotFoundErrorIterator{}, 0
 		}
 	case *ab.SeekPosition_NextCommit:
+		// 从当前链高开始（即下一个待提交的区块）
 		startingBlockNumber = fl.Height()
 	default:
+		// 对于未知的 SeekPosition 类型，返回未找到迭代器
 		return &blockledger.NotFoundErrorIterator{}, 0
 	}
 
+	// 根据起始区块编号初始化区块迭代器
 	iterator, err := fl.blockStore.RetrieveBlocks(startingBlockNumber)
 	if err != nil {
-		logger.Warnw("Failed to initialize block iterator", "blockNum", startingBlockNumber, "error", err)
+		// 初始化迭代器失败时记录警告日志
+		logger.Warnw("初始化区块迭代器失败", "blockNum", startingBlockNumber, "error", err)
 		return &blockledger.NotFoundErrorIterator{}, 0
 	}
 
+	// 包装迭代器并返回，同时返回起始区块编号
 	return &fileLedgerIterator{ledger: fl, blockNumber: startingBlockNumber, commonIterator: iterator}, startingBlockNumber
 }
 
