@@ -23,6 +23,7 @@ type connection struct {
 	ClientCert  string `json:"client_cert"`          // 客户端证书
 }
 
+// RunRelease 释放外部链码包
 func RunRelease(arg ...string) error {
 	loggerRelease.Println("::释放链码包")
 

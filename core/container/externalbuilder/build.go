@@ -21,6 +21,7 @@ type Config struct {
 	PeerName string
 }
 
+// RunBuild 构建外部链码包
 func RunBuild(arg ...string) error {
 	loggerBuild.Println("::构建链码包")
 

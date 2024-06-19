@@ -18,6 +18,7 @@ type chaincodeMetadata struct {
 	Type string `json:"type"`
 }
 
+// RunDetect 检测外部链码包
 func RunDetect(arg ...string) error {
 	loggerDetect.Println("::检测链码包")
 
