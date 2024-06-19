@@ -722,23 +722,34 @@ func extractBootstrapBlock(conf *localconfig.TopLevel) *cb.Block {
 	return bootstrapBlock
 }
 
-// 初始化引导通道
-// 接收参数： genesisBlock(刚才创建的创始区块) lf(账本工厂)
+// 根据创世区块初始化系统通道。
+// 此函数确保系统通道账本存在并包含了创世区块。
 func initializeBootstrapChannel(genesisBlock *cb.Block, lf blockledger.Factory) {
+	// 从创世区块中解析通道ID
 	channelID, err := protoutil.GetChannelIDFromBlock(genesisBlock)
 	if err != nil {
-		logger.Fatal("Failed to parse channel ID from genesis block:", err)
+		// 若解析通道ID失败，则记录错误并终止程序
+		logger.Fatal("从创世区块中解析通道ID失败:", err)
 	}
+
+	// 使用账本工厂获取或创建指定通道的账本
 	gl, err := lf.GetOrCreate(channelID)
 	if err != nil {
-		logger.Fatal("Failed to create the system channel:", err)
+		// 创建系统通道失败，记录错误并终止程序
+		logger.Fatal("创建系统通道失败:", err)
 	}
+
+	// 检查账本高度是否为0，即账本是否为空
 	if gl.Height() == 0 {
+		// 尝试将创世区块追加到账本中
 		if err := gl.Append(genesisBlock); err != nil {
-			logger.Fatal("Could not write genesis block to ledger:", err)
+			// 追加创世区块失败，记录错误并终止程序
+			logger.Fatal("无法将创世区块写入账本:", err)
 		}
 	}
-	logger.Infof("Initialized the system channel '%s' from bootstrap block", channelID)
+
+	// 成功初始化后，记录系统通道已从引导块设置的信息
+	logger.Infof("从引导块初始化了系统通道 '%s'", channelID)
 }
 
 func isClusterType(genesisBlock *cb.Block, bccsp bccsp.BCCSP) bool {
