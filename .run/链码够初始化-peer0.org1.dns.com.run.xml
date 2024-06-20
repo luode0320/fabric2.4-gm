@@ -1,8 +1,8 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="链码存证-peer0.org1.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application">
+  <configuration default="false" name="链码够初始化-peer0.org1.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application">
     <module name="xinhe-fabric" />
     <working_directory value="$PROJECT_DIR$" />
-    <parameters value="chaincode invoke --channelID=mychannel --name=mycc --ctor='{&quot;function&quot;:&quot;set&quot;,&quot;Args&quot;:[&quot;key&quot;,&quot;小白兔&quot;]}'" />
+    <parameters value="chaincode invoke --isInit=true --channelID=mychannel --name=mycc --ctor='{&quot;Args&quot;:[&quot;a&quot;,&quot;bb&quot;]}'" />
     <kind value="PACKAGE" />
     <package value="github.com/hyperledger/fabric/cmd/peer" />
     <directory value="$PROJECT_DIR$" />

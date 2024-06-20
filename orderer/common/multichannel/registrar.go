@@ -416,28 +416,42 @@ func (r *Registrar) initAppChannelsWhenSystemChannelExists(existingChannels []st
 	}
 }
 
+// initLedgerResourcesClusterConsenter 初始化账本资源及集群共识器
+// 参数:
+//   - configBlock: 包含配置信息的区块链数据块，通常为创世块，用于初始化系统配置
+//
+// 返回:
+//   - ledgerResources: 初始化后的账本资源实例，包含对账本访问和订单程序配置的引用
+//   - clusterConsenter: 集群共识器实例，负责处理共识过程
+//   - error: 如果在初始化过程中遇到错误，则返回错误信息
 func (r *Registrar) initLedgerResourcesClusterConsenter(configBlock *cb.Block) (*ledgerResources, consensus.ClusterConsenter, error) {
+	// 从配置块中提取配置信封
 	configEnv, err := protoutil.ExtractEnvelope(configBlock, 0)
 	if err != nil {
-		return nil, nil, errors.WithMessagef(err, "failed extracting config envelope from block")
+		return nil, nil, errors.WithMessagef(err, "提取配置信封自区块链失败")
 	}
 
+	// 使用配置信封创建账本资源
 	ledgerRes, err := r.newLedgerResources(configEnv)
 	if err != nil {
-		return nil, nil, errors.WithMessagef(err, "failed creating ledger resources")
+		return nil, nil, errors.WithMessagef(err, "根据配置信封创建账本资源失败")
 	}
 
+	// 获取账本中的订单程序配置
 	ordererConfig, _ := ledgerRes.OrdererConfig()
+	// 在注册器中查找与配置匹配的共识器
 	consenter, foundConsenter := r.consenters[ordererConfig.ConsensusType()]
 	if !foundConsenter {
-		return nil, nil, errors.Errorf("failed to find a consenter for consensus type: %s", ordererConfig.ConsensusType())
+		return nil, nil, errors.Errorf("未找到对应共识类型的共识器: %s", ordererConfig.ConsensusType())
 	}
 
+	// 确认找到的共识器是否支持集群共识
 	clusterConsenter, ok := consenter.(consensus.ClusterConsenter)
 	if !ok {
-		return nil, nil, errors.New("failed cast: clusterConsenter is not a consensus.ClusterConsenter")
+		return nil, nil, errors.New("类型转换错误: 找到的共识器不支持集群共识接口")
 	}
 
+	// 成功初始化后，返回账本资源和集群共识器实例
 	return ledgerRes, clusterConsenter, nil
 }
 

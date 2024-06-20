@@ -156,7 +156,7 @@ func RunBuild(arg ...string) error {
 //   - string：表示处理后的字符串。
 //   - error：如果处理模板时出错，则返回错误。
 func execTempl(cfg map[string]interface{}, inputStr string) (string, error) {
-	// 解析模板字符串
+	// 解析模板字符串, missingkey=error 是一个选项，表示当模板中使用了未定义的变量时，会返回一个错误。
 	t, err := template.New("").Option("missingkey=error").Parse(inputStr)
 	if err != nil {
 		fmt.Printf("无法分析模板: %s", err)

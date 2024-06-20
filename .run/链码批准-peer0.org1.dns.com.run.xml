@@ -1,9 +1,9 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="链码批准-peer0.org1.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application">
-    <module name="trusted-chain" />
+    <module name="xinhe-fabric" />
     <target name="@@@LOCAL@@@" />
     <working_directory value="$PROJECT_DIR$" />
-    <parameters value="lifecycle chaincode approveformyorg --channelID=mychannel --name=mycc --version=1.0 --sequence=1 --init-required=true --package-id=chaincode:91078aea960d5d147446346c746f1e68a7f7667caf581fe20dcaffc12474c7a4" />
+    <parameters value="lifecycle chaincode approveformyorg --channelID=mychannel --name=mycc --version=1.0 --sequence=1 --init-required=true --package-id=chaincode:2869dc69db2f7832741567be5171a09aacf4f8f7c3bf6e948528c0fee77486a0" />
     <kind value="PACKAGE" />
     <package value="github.com/hyperledger/fabric/cmd/peer" />
     <directory value="$PROJECT_DIR$" />

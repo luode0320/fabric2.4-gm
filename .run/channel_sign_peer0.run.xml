@@ -1,6 +1,5 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="channel_sign_peer0" type="GoApplicationRunConfiguration" factoryName="Go Application">
-    <module name="trusted-chain" />
     <target name="@@@LOCAL@@@" />
     <working_directory value="$PROJECT_DIR$" />
     <parameters value="channel signconfigtx --file ./samplewindowsconfig/channel-artifacts/mychannel-compute-update.pb" />

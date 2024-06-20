@@ -1,13 +1,12 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="peer0.org1.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application" singleton="false">
+  <configuration default="false" name="orderer1.orderer.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application" singleton="false">
     <module name="xinhe-fabric" />
     <target name="@@@LOCAL@@@" />
     <working_directory value="$PROJECT_DIR$" />
-    <parameters value="node start" />
     <kind value="PACKAGE" />
-    <package value="github.com/hyperledger/fabric/cmd/peer" />
+    <package value="github.com/hyperledger/fabric/cmd/orderer" />
     <directory value="$PROJECT_DIR$" />
-    <filePath value="$PROJECT_DIR$/cmd/peer/main.go" />
+    <filePath value="$PROJECT_DIR$/cmd/orderer/main.go" />
     <output_directory value="$PROJECT_DIR$" />
     <method v="2" />
   </configuration>

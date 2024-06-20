@@ -1,6 +1,5 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="channel_json_to_update_pb" type="GoApplicationRunConfiguration" factoryName="Go Application">
-    <module name="trusted-chain" />
     <target name="13-peer" />
     <working_directory value="$PROJECT_DIR$" />
     <parameters value="proto_encode --type common.Config --input ./samplewindowsconfig/channel-artifacts/mychannel.json --output ./samplewindowsconfig/channel-artifacts/mychannel-update.pb" />

@@ -1,6 +1,5 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="获取-peer0_org0_luode_com" type="GoApplicationRunConfiguration" factoryName="Go Application">
-    <module name="trusted-chain" />
     <target name="@@@LOCAL@@@" />
     <working_directory value="$PROJECT_DIR$" />
     <parameters value="channel fetch config channel-artifacts/mychannel.block --channelID mychannel" />

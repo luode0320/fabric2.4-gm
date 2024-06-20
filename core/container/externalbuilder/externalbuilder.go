@@ -207,15 +207,25 @@ func (d *Detector) detect(buildContext *BuildContext) *Builder {
 	return nil
 }
 
-// BuildContext holds references to the various assets locations necessary to
-// execute the detect, build, release, and run programs for external builders
+// BuildContext 结构体用于存储执行外部构建器的检测、构建、发布和运行程序所需的各种资源位置引用。
 type BuildContext struct {
-	CCID        string
-	ScratchDir  string
-	SourceDir   string
-	ReleaseDir  string
+	// CCID 表示链码（Chaincode）的唯一标识符。
+	CCID string
+
+	// ScratchDir 是一个临时目录，用于存放构建过程中产生的临时文件，以避免影响现有文件系统。
+	ScratchDir string
+
+	// SourceDir 指向源代码所在的目录，构建过程会从此目录读取源代码。
+	SourceDir string
+
+	// ReleaseDir 是存放最终构建产物的目录，包括编译后的可执行文件、配置文件等。
+	ReleaseDir string
+
+	// MetadataDir 存储与构建相关的元数据信息，例如依赖关系描述、构建配置等。
 	MetadataDir string
-	BldDir      string
+
+	// BldDir 是构建目录，用于存放中间构建产物，可能包括对象文件、库文件等。
+	BldDir string
 }
 
 // NewBuildContext 创建运行外部构建过程所需的目录，并提取链码包资源。

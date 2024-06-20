@@ -1,6 +1,5 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="更新-order0_ordererorg_luode_com" type="GoApplicationRunConfiguration" factoryName="Go Application">
-    <module name="trusted-chain" />
     <target name="13-peer" />
     <working_directory value="$PROJECT_DIR$" />
     <parameters value="channel update --file channel-artifacts/mychannel-compute-update.pb --channelID mychannel" />

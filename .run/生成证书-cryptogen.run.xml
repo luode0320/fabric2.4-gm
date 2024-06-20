@@ -1,8 +1,8 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="生成证书-cryptogen" type="GoApplicationRunConfiguration" factoryName="Go Application">
-    <module name="trusted-chain" />
+    <module name="xinhe-fabric" />
     <working_directory value="$PROJECT_DIR$" />
-    <parameters value="generate --config ./samplewindowsconfig/crypto-config.yaml --output ./samplewindowsconfig/crypto-config2/" />
+    <parameters value="generate --config ./samplewindowsconfig/crypto-config.yaml --output ./samplewindowsconfig/crypto-config/" />
     <kind value="FILE" />
     <package value="github.com/hyperledger/fabric" />
     <directory value="$PROJECT_DIR$" />

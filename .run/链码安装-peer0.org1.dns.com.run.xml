@@ -1,6 +1,6 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="链码安装-peer0.org1.dns.com" type="GoApplicationRunConfiguration" factoryName="Go Application">
-    <module name="trusted-chain" />
+    <module name="xinhe-fabric" />
     <target name="@@@LOCAL@@@" />
     <working_directory value="$PROJECT_DIR$" />
     <parameters value="lifecycle chaincode install chaincode\chaincode.tar.gz" />
