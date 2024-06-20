@@ -30,7 +30,7 @@ type ConsenterSupport struct {
 	// BlockByIndex maps block numbers to retrieved values of these blocks
 	BlockByIndex map[uint64]*cb.Block
 
-	// Blocks is the channel where WriteBlock writes the most recently created block,
+	// Blocks 是 WriteBlock 写入最近创建的块的通道
 	Blocks chan *cb.Block
 
 	// ChannelIDVal is the value returned by ChannelID()
@@ -175,8 +175,7 @@ func (mcs *ConsenterSupport) VerifyBlockSignature(_ []*protoutil.SignedData, _ *
 	return mcs.BlockVerificationErr
 }
 
-// Append appends a new block to the ledger in its raw form,
-// unlike WriteBlock that also mutates its metadata.
+// Append 以原始形式将新块附加到账本中，这与 WriteBlock 不同，WriteBlock 也会改变其元数据。
 func (mcs *ConsenterSupport) Append(block *cb.Block) error {
 	mcs.HeightVal++
 	mcs.Blocks <- block

@@ -19,12 +19,31 @@ import (
 	"github.com/hyperledger/fabric/protoutil"
 )
 
+// blockWriterSupport 接口定义了一组方法，这些方法对于支持区块写入操作和通道配置管理至关重要。任何实现此接口的类型都需要提供以下功能：
 type blockWriterSupport interface {
+
+	// 签名序列化器
+	// 该方法集允许实体对消息进行签名并将其序列化为字节流，这对于构建包含身份验证信息的交易或区块非常重要。
 	identity.SignerSerializer
+
+	// 读写账本
+	// 提供读取和写入区块链数据的能力，包括检索特定高度的区块以及追加新区块到账本上。
 	blockledger.ReadWriter
+
+	// 配置事务验证器
+	// 允许验证接收到的配置更新交易是否有效，确保提议的系统或应用通道配置变更符合规范。
 	configtx.Validator
+
+	// 更新通道配置包
+	// 根据新的配置包更新当前的系统或应用通道配置，这通常发生在通道配置更新被批准之后。
 	Update(*newchannelconfig.Bundle)
+
+	// 创建通道配置包
+	// 根据给定的通道ID和配置结构创建一个新的通道配置包，这对于初始化新通道或更新现有通道的配置非常关键。
 	CreateBundle(channelID string, config *cb.Config) (*newchannelconfig.Bundle, error)
+
+	// 获取共享的排序服务配置
+	// 返回与排序服务相关的配置信息，这对于确保与其他排序节点的兼容性和一致性非常重要。
 	SharedConfig() newchannelconfig.Orderer
 }
 

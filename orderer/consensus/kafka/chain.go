@@ -585,7 +585,7 @@ func (chain *chainImpl) processMessagesToBlocks() ([]uint64, error) {
 				_ = chain.processConnect(chain.ChannelID())
 				counts[indexProcessConnectPass]++
 
-			// 在判断是否需要切割区块时发生错误
+			// 在判断是否需要切割区块
 			case *ab.KafkaMessage_TimeToCut:
 				// 处理接收到的时间切分（TimeToCut）消息，根据消息指示切割区块。
 				if err := chain.processTimeToCut(msg.GetTimeToCut(), in.Offset); err != nil {
@@ -894,6 +894,7 @@ func (chain *chainImpl) processRegular(regularMessage *ab.KafkaMessageRegular, r
 			LastOriginalOffsetProcessed: chain.lastOriginalOffsetProcessed,
 			LastResubmittedConfigOffset: chain.lastResubmittedConfigOffset,
 		}
+		// 调用底层 consenter 支持的 WriteBlock 方法，将区块及编码后的元数据写入最佳到区块链的结构中(此时并没有写入文件的操作)
 		chain.WriteBlock(block, metadata)
 		chain.lastCutBlockNumber++
 		logger.Debugf("[通道: %s] 批次已满，切割区块 [%d] - 最后持久化的偏移量现在为 %d", chain.ChannelID(), chain.lastCutBlockNumber, offset)
