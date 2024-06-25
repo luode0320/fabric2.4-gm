@@ -726,11 +726,11 @@ func (ef *ExternalFunctions) InstallChaincode(chaincodeInstallPackage []byte) (*
 
 	buildStatus, ok := ef.BuildRegistry.BuildStatus(packageID)
 	if ok {
-		// another invocation of lifecycle has concurrently
-		// installed a chaincode with this package id
+		// 生命周期的另一个调用有并发
+		// 用这个包id安装链码
 		<-buildStatus.Done()
 		if buildStatus.Err() == nil {
-			return nil, errors.Errorf("chaincode already successfully installed (package ID '%s')", packageID)
+			return nil, errors.Errorf("链码已成功安装 (package ID '%s')", packageID)
 		}
 		buildStatus = ef.BuildRegistry.ResetBuildStatus(packageID)
 	}
@@ -739,7 +739,7 @@ func (ef *ExternalFunctions) InstallChaincode(chaincodeInstallPackage []byte) (*
 	<-buildStatus.Done()
 	if err := buildStatus.Err(); err != nil {
 		ef.Resources.ChaincodeStore.Delete(packageID)
-		return nil, errors.WithMessage(err, "could not build chaincode")
+		return nil, errors.WithMessage(err, "无法生成链码")
 	}
 
 	if ef.InstallListener != nil {

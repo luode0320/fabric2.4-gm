@@ -658,7 +658,7 @@ func isValidStatedbArtifactsTar(statedbArtifactsTar []byte) error {
 	return nil
 }
 
-// executeInstall implements the "install" Invoke transaction
+// executeInstall 实现 “install” 调用事务
 func (lscc *SCC) executeInstall(stub shim.ChaincodeStubInterface, ccbytes []byte) error {
 	ccpack, err := ccprovider.GetCCPackage(ccbytes, lscc.BCCSP)
 	if err != nil {
@@ -699,7 +699,7 @@ func (lscc *SCC) executeInstall(stub shim.ChaincodeStubInterface, ccbytes []byte
 	}
 	<-buildStatus.Done()
 	if err := buildStatus.Err(); err != nil {
-		return errors.WithMessage(err, "chaincode installed to peer but could not build chaincode")
+		return errors.WithMessage(err, "链码已安装到对等方，但无法构建链码")
 	}
 
 	md, err := lscc.EbMetadataProvider.PackageMetadata(ccid)
