@@ -29,88 +29,126 @@ import (
 // 这个必须大于等于1。
 var MaxSnapshotFiles = 4
 
-// MemoryStorage 目前由etcd/raft.MemoryStorage支持。这个接口是
-// 定义为公开FSM的依赖关系，以便将来可以交换。
-// TODO(jay) Add other necessary methods to this interface once we need
-// them in implementation, e.g. ApplySnapshot.
+// MemoryStorage 当前由 etcd/raft.MemoryStorage 实现支持。此接口设计
+// 旨在公开FSM（有限状态机）的依赖项，以便未来可以替换或扩展存储实现。
+// 目标是使共识层能更灵活地适应不同的存储需求或优化策略。
+// 注意：随着实现的发展，可能需要向此接口添加更多方法，例如 ApplySnapshot，
+// 当在具体实现中需要用到它们时。
+
+// MemoryStorage 接口定义了用于存储和管理 Raft 共识算法状态的内存存储行为。
+// 这些方法允许共识层在内存中持久化和恢复其状态，包括日志条目和硬状态，
+// 以及创建和应用快照，从而支持 Raft 算法的正常运作和性能优化。
 type MemoryStorage interface {
+	// raft.Storage 是 raft 包定义的存储接口，MemoryStorage 必须实现它。
+	// 这意味着 MemoryStorage 需要支持从磁盘读取和写入 Raft 的状态。
 	raft.Storage
+
+	// Append 方法用于将一系列 Raft 日志条目追加到存储中。
+	// 这些条目将被持久化，以便在系统重启后可以从中恢复状态。
 	Append(entries []raftpb.Entry) error
+
+	// SetHardState 方法用于设置 Raft 的硬状态。
+	// 硬状态包括最新任期、投票给谁的ID和已知已提交的最后条目的索引和任期。
 	SetHardState(st raftpb.HardState) error
+
+	// CreateSnapshot 方法用于创建一个快照，它捕获了当前状态机的一个快照。
+	// 快照包括状态机的当前配置状态（ConfState）和任意的数据。
 	CreateSnapshot(i uint64, cs *raftpb.ConfState, data []byte) (raftpb.Snapshot, error)
+
+	// Compact 方法用于压缩存储，删除不再需要的日志条目。
+	// 这有助于减少存储空间的占用，同时保持状态机的完整性。
 	Compact(compactIndex uint64) error
+
+	// ApplySnapshot 方法用于应用一个快照，这将覆盖当前的状态机状态。
+	// 快照的应用可以显著提高状态机的性能，尤其是在日志条目变得非常长时。
 	ApplySnapshot(snap raftpb.Snapshot) error
 }
 
-// RaftStorage 封装etcd/raft数据所需的存储空间，即内存、日志
+// RaftStorage 结构体封装了 etcd/raft 数据所需的存储空间，包括内存、WAL（Write-Ahead Log）日志和快照。
+// 这些存储组件共同构成了 raft 状态机的持久化和恢复机制。
 type RaftStorage struct {
+	// SnapshotCatchUpEntries 用于配置在应用快照后需要从 WAL 中追加的额外条目数量。
 	SnapshotCatchUpEntries uint64
 
+	// walDir 和 snapDir 分别存储 WAL 日志文件和快照文件的目录路径。
 	walDir  string
 	snapDir string
 
+	// lg 是日志记录器，用于记录 RaftStorage 实例的操作日志。
 	lg *flogging.FabricLogger
 
+	// ram 是内存存储，用于暂存最新的 raft 状态和条目，提供快速访问和应用快照的能力。
 	ram  MemoryStorage
-	wal  *wal.WAL
-	snap *snap.Snapshotter
+	wal  *wal.WAL          // wal 是 WAL 日志实例，用于持久化 raft 状态机的更改。
+	snap *snap.Snapshotter // snap 是快照处理器，用于创建和恢复快照。
 
-	// 跟踪磁盘上快照索引的队列
+	// snapshotIndex 是一个队列，用于跟踪磁盘上快照的索引，帮助管理快照的生命周期。
 	snapshotIndex []uint64
 }
 
-// CreateStorage 尝试创建存储来持久化etcd/raft数据。
-// 如果数据存在于指定的磁盘中，则加载数据重构存储状态。
+// CreateStorage 尝试创建一个存储实例，用于持久化 etcd/raft 的数据。
+// 如果在指定的磁盘位置存在数据，则会加载这些数据以重构存储的状态。
 func CreateStorage(
+	// lg 是日志记录器，用于记录调试和错误信息。
 	lg *flogging.FabricLogger,
+	// walDir 是 Write-Ahead Log (WAL) 文件所在的目录路径。
 	walDir string,
+	// snapDir 是快照文件所在的目录路径。
 	snapDir string,
+	// ram 是内存中的存储实例，用于保存临时状态。
 	ram MemoryStorage,
 ) (*RaftStorage, error) {
+	// 创建快照处理器，并尝试加载快照数据。
 	sn, err := createSnapshotter(lg, snapDir)
 	if err != nil {
 		return nil, err
 	}
 
+	// 尝试加载快照。
 	snapshot, err := sn.Load()
 	if err != nil {
 		if err == snap.ErrNoSnapshot {
-			lg.Debugf("No snapshot found at %s", snapDir)
+			lg.Debugf("在 %s 中未找到快照。", snapDir)
 		} else {
-			return nil, errors.Errorf("failed to load snapshot: %s", err)
+			return nil, errors.Errorf("加载快照失败: %s", err)
 		}
 	} else {
-		// snapshot found
-		lg.Debugf("Loaded snapshot at Term %d and Index %d, Nodes: %+v",
+		// 如果找到了快照，打印快照的详细信息。
+		lg.Debugf("在 Term %d 和 Index %d 加载了快照，节点列表: %+v",
 			snapshot.Metadata.Term, snapshot.Metadata.Index, snapshot.Metadata.ConfState.Nodes)
 	}
 
+	// 创建或读取 WAL 文件。
 	w, st, ents, err := createOrReadWAL(lg, walDir, snapshot)
 	if err != nil {
-		return nil, errors.Errorf("failed to create or read WAL: %s", err)
+		return nil, errors.Errorf("创建或读取 WAL 文件失败: %s", err)
 	}
 
+	// 如果有快照数据，将其应用到内存存储中。
 	if snapshot != nil {
-		lg.Debugf("Applying snapshot to raft MemoryStorage")
+		lg.Debugf("将快照应用到 raft 内存存储中")
 		if err := ram.ApplySnapshot(*snapshot); err != nil {
-			return nil, errors.Errorf("Failed to apply snapshot to memory: %s", err)
+			return nil, errors.Errorf("将快照应用到内存中失败: %s", err)
 		}
 	}
 
-	lg.Debugf("Setting HardState to {Term: %d, Commit: %d}", st.Term, st.Commit)
-	ram.SetHardState(st) // MemoryStorage.SetHardState always returns nil
+	// 设置硬状态（hard state）。
+	lg.Debugf("设置 HardState 为 {Term: %d, Commit: %d}", st.Term, st.Commit)
+	ram.SetHardState(st) // MemoryStorage.SetHardState 总是返回 nil
 
-	lg.Debugf("Appending %d entries to memory storage", len(ents))
-	ram.Append(ents) // MemoryStorage.Append always return nil
+	// 将 WAL 日志条目追加到内存存储中。
+	lg.Debugf("向内存存储追加 %d 条日志条目", len(ents))
+	ram.Append(ents) // MemoryStorage.Append 总是返回 nil
 
+	// 创建并返回 RaftStorage 实例。
 	return &RaftStorage{
-		lg:            lg,
-		ram:           ram,
-		wal:           w,
-		snap:          sn,
-		walDir:        walDir,
-		snapDir:       snapDir,
-		snapshotIndex: ListSnapshots(lg, snapDir),
+		lg:            lg,                         // lg 是日志记录器，用于记录 RaftStorage 实例的操作日志。
+		ram:           ram,                        // ram 是内存存储，用于暂存最新的 raft 状态和条目，提供快速访问和应用快照的能力。
+		wal:           w,                          // wal 是 WAL 日志实例，用于持久化 raft 状态机的更改。
+		snap:          sn,                         // snap 是快照处理器，用于创建和恢复快照。
+		walDir:        walDir,                     // walDir 和 snapDir 分别存储 WAL 日志文件和快照文件的目录路径。
+		snapDir:       snapDir,                    // walDir 和 snapDir 分别存储 WAL 日志文件和快照文件的目录路径。
+		snapshotIndex: ListSnapshots(lg, snapDir), // snapshotIndex 是一个队列，用于跟踪磁盘上快照的索引，帮助管理快照的生命周期。
 	}, nil
 }
 
@@ -161,73 +199,100 @@ func ListSnapshots(logger *flogging.FabricLogger, snapDir string) []uint64 {
 	return snapshots
 }
 
+// createSnapshotter 函数用于创建一个 Snapshotter 实例，该实例用于处理和管理快照文件。
+// 此函数首先确保用于存放快照文件的目录存在，如果目录不存在则创建之。
+// 成功创建目录后，使用提供的日志记录器和快照目录路径来初始化 Snapshotter 实例。
 func createSnapshotter(logger *flogging.FabricLogger, snapDir string) (*snap.Snapshotter, error) {
+	// 尝试创建快照目录，如果目录不存在的话。
 	if err := os.MkdirAll(snapDir, os.ModePerm); err != nil {
-		return nil, errors.Errorf("failed to mkdir '%s' for snapshot: %s", snapDir, err)
+		// 如果创建目录失败，返回错误信息。
+		return nil, errors.Errorf("为快照创建目录 '%s' 失败: %s", snapDir, err)
 	}
 
+	// 成功创建目录后，使用 logger 和 snapDir 初始化 Snapshotter 实例。
 	return snap.New(logger.Zap(), snapDir), nil
 }
 
+// createOrReadWAL 函数用于创建或读取 Write-Ahead Log (WAL)，WAL 是一种用于持久化 raft 状态的日志文件。
+// 当没有快照数据时，该函数会创建一个新的 WAL；当有快照数据时，它会打开现有的 WAL 并从中读取状态和条目。
 func createOrReadWAL(lg *flogging.FabricLogger, walDir string, snapshot *raftpb.Snapshot) (w *wal.WAL, st raftpb.HardState, ents []raftpb.Entry, err error) {
+	// 检查 WAL 目录是否存在
 	if !wal.Exist(walDir) {
-		lg.Infof("No WAL data found, creating new WAL at path '%s'", walDir)
-		// TODO(jay_guo) add metadata to be persisted with wal once we need it.
-		// 用例可以是在新节点上转储和恢复数据。
+		// 如果 WAL 目录不存在，创建新的 WAL
+		lg.Infof("未找到 WAL 数据，在路径 '%s' 创建新的 WAL", walDir)
 		w, err := wal.Create(lg.Zap(), walDir, nil)
 		if err == os.ErrExist {
-			lg.Fatalf("programming error, we've just checked that WAL does not exist")
+			// 这不应该发生，因为我们刚刚检查过 WAL 不存在
+			lg.Fatalf("编程错误，我们刚刚检查过 WAL 不存在")
 		}
 
 		if err != nil {
-			return nil, st, nil, errors.Errorf("failed to initialize WAL: %s", err)
+			// 如果创建 WAL 失败，返回错误
+			return nil, st, nil, errors.Errorf("初始化 WAL 失败: %s", err)
 		}
 
+		// 创建完成后关闭 WAL
 		if err = w.Close(); err != nil {
-			return nil, st, nil, errors.Errorf("failed to close the WAL just created: %s", err)
+			return nil, st, nil, errors.Errorf("关闭刚刚创建的 WAL 失败: %s", err)
 		}
 	} else {
-		lg.Infof("在路径处找到 WAL 数据 '%s', 重播它", walDir)
+		// 如果 WAL 目录存在，读取并重播 WAL 数据
+		lg.Infof("在路径 '%s' 找到 WAL 数据，重播它", walDir)
 	}
 
+	// 初始化 WAL 快照结构体
 	walsnap := walpb.Snapshot{}
 	if snapshot != nil {
+		// 如果存在快照，更新 WAL 快照结构体中的 Index 和 Term
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
 	}
 
-	lg.Debugf("Loading WAL at Term %d and Index %d", walsnap.Term, walsnap.Index)
+	// 打印日志信息，显示正在加载的 WAL 的 Term 和 Index
+	lg.Debugf("在 Term %d 和 Index %d 加载 WAL", walsnap.Term, walsnap.Index)
 
+	// 循环尝试打开 WAL，直到成功
 	var repaired bool
 	for {
-		if w, err = wal.Open(lg.Zap(), walDir, walsnap); err != nil {
-			return nil, st, nil, errors.Errorf("failed to open WAL: %s", err)
+		w, err = wal.Open(lg.Zap(), walDir, walsnap)
+		if err != nil {
+			// 如果打开 WAL 失败，返回错误
+			return nil, st, nil, errors.Errorf("打开 WAL 失败: %s", err)
 		}
 
-		if _, st, ents, err = w.ReadAll(); err != nil {
-			lg.Warnf("Failed to read WAL: %s", err)
+		// 读取 WAL 中的所有条目和硬状态
+		_, st, ents, err = w.ReadAll()
+		if err != nil {
+			// 如果读取 WAL 失败，打印警告信息
+			lg.Warnf("读取 WAL 失败: %s", err)
 
+			// 关闭错误的 WAL
 			if errc := w.Close(); errc != nil {
-				return nil, st, nil, errors.Errorf("failed to close erroneous WAL: %s", errc)
+				return nil, st, nil, errors.Errorf("关闭错误的 WAL 失败: %s", errc)
 			}
 
-			// 只修复 UnexpectedEOF 的错误，并且只修复一次
+			// 只修复 UnexpectedEOF 错误，并且只修复一次
 			if repaired || err != io.ErrUnexpectedEOF {
-				return nil, st, nil, errors.Errorf("failed to read WAL and cannot repair: %s", err)
+				// 如果不是 UnexpectedEOF 或已经修复过，返回错误
+				return nil, st, nil, errors.Errorf("读取 WAL 失败且无法修复: %s", err)
 			}
 
+			// 尝试修复 WAL
 			if !wal.Repair(lg.Zap(), walDir) {
-				return nil, st, nil, errors.Errorf("failed to repair WAL: %s", err)
+				// 如果修复 WAL 失败，返回错误
+				return nil, st, nil, errors.Errorf("修复 WAL 失败: %s", err)
 			}
 
+			// 设置 repaired 为 true，表示已经尝试过修复
 			repaired = true
-			// 下一次循环应该能够打开WAL并返回
+			// 继续循环，尝试再次打开 WAL
 			continue
 		}
 
-		// 成功打开 WAL 并且读取所有的条目，终止循环
+		// 如果成功打开 WAL 并读取所有条目，跳出循环
 		break
 	}
 
+	// 返回打开的 WAL、硬状态和条目列表
 	return w, st, ents, nil
 }
 

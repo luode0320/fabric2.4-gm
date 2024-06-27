@@ -153,27 +153,33 @@ func LogNonPubKeyMismatchErr(log func(template string, args ...interface{}), err
 		err)
 }
 
-// CertificatesWithSamePublicKey returns nil if both byte slices
-// are valid DER encoding of certificates with the same public key.
+// CertificatesWithSamePublicKey 检查两个DER编码的证书是否具有相同的公钥。
+// 如果两个证书的公钥相同，则返回nil；否则返回错误。
 func CertificatesWithSamePublicKey(der1, der2 []byte) error {
+	// 从第一个DER编码的证书中提取并规范化的公钥
 	cert1canonized, err := publicKeyFromCertificate(der1)
 	if err != nil {
 		return err
 	}
 
+	// 从第二个DER编码的证书中提取并规范化的公钥
 	cert2canonized, err := publicKeyFromCertificate(der2)
 	if err != nil {
 		return err
 	}
 
+	// 比较两个规范化后的公钥是否相等
 	if bytes.Equal(cert1canonized, cert2canonized) {
+		// 公钥相同，返回nil
 		return nil
 	}
+	// 公钥不同，返回错误
 	return ErrPubKeyMismatch
 }
 
 // publicKeyFromCertificate 返回给定ASN1 DER证书的公钥。
 func publicKeyFromCertificate(der []byte) ([]byte, error) {
+	// 解析后的x509.Certificate实例
 	cert, err := common.ParseCertificate(der)
 	if err != nil {
 		return nil, err

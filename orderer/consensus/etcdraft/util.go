@@ -500,11 +500,17 @@ func ConfChange(blockMetadata *etcdraft.BlockMetadata, confState *raftpb.ConfSta
 	return raftConfChange
 }
 
-// CreateConsentersMap creates a map of Raft Node IDs to Consenter given the block metadata and the config metadata.
+// CreateConsentersMap 根据区块元数据和配置元数据创建一个从Raft节点ID到Consenter的映射。
 func CreateConsentersMap(blockMetadata *etcdraft.BlockMetadata, configMetadata *etcdraft.ConfigMetadata) map[uint64]*etcdraft.Consenter {
+	// 初始化共识者映射
 	consenters := map[uint64]*etcdraft.Consenter{}
+
+	// 遍历配置元数据中的共识者列表
 	for i, consenter := range configMetadata.Consenters {
+		// 使用区块元数据中的共识者ID作为键，将共识者信息添加到映射中
 		consenters[blockMetadata.ConsenterIds[i]] = consenter
 	}
+
+	// 返回填充后的共识者映射
 	return consenters
 }

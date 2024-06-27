@@ -21,7 +21,7 @@ type Consenter interface {
 	// HandleChain 应基于给定的资源集合创建并返回链的引用。
 	// 对于每个进程中的特定链，此方法只会被调用一次。通常情况下，错误会被视为不可恢复的，并导致系统关闭。
 	// 有关更多详细信息，请参阅Chain的描述。
-	// HandleChain的第二个参数是指向ORDERER槽中上一个提交到此链账本的区块的元数据指针。
+	// HandleChain的第二个参数是指向ORDERER槽中上一个提交到此链账本的区块的元数据指针(最新区块)。
 	// 对于新链或迁移后的链，此元数据将为nil（或包含零长度的Value），因为没有先前的元数据可报告。
 	HandleChain(support ConsenterSupport, metadata *cb.Metadata) (Chain, error)
 }

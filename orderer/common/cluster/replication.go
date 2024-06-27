@@ -441,8 +441,8 @@ var ErrSkipped = errors.New("skipped")
 // ErrForbidden 表示排序节点由于访问控制而拒绝发送块。
 var ErrForbidden = errors.New("禁止拉取通道数据")
 
-// ErrServiceUnavailable denotes that an ordering node is not servicing at the moment.
-var ErrServiceUnavailable = errors.New("service unavailable")
+// ErrServiceUnavailable 表示排序节点目前不在服务中。
+var ErrServiceUnavailable = errors.New("服务不可用")
 
 // ErrNotInChannel denotes that an ordering node is not in the channel
 var ErrNotInChannel = errors.New("not in the channel")

@@ -42,93 +42,143 @@ const (
 )
 
 const (
-	// DefaultSnapshotCatchUpEntries is the default number of entries
-	// to preserve in memory when a snapshot is taken. This is for
-	// slow followers to catch up.
+	// DefaultSnapshotCatchUpEntries 是默认的快照追加条目数量，当创建快照时，会在内存中保留一定数量的条目。
+	// 这是为了让慢速跟随者能够追赶最新的状态，避免立即丢失所有未持久化的更改。
 	DefaultSnapshotCatchUpEntries = uint64(4)
 
-	// DefaultSnapshotIntervalSize is the default snapshot interval. It is
-	// used if SnapshotIntervalSize is not provided in channel config options.
-	// It is needed to enforce snapshot being set.
+	// DefaultSnapshotIntervalSize 是默认的快照间隔大小，如果在通道配置选项中没有提供 SnapshotIntervalSize，
+	// 将使用此值。它用于确保快照机制的激活，避免日志条目无限增长，降低存储压力。
 	DefaultSnapshotIntervalSize = 16 * MEGABYTE
 
-	// DefaultEvictionSuspicion 节点在这段时间内无领导的情况下开始怀疑自己被驱逐的阈值
+	// DefaultEvictionSuspicion 是节点在没有领导者的情况下开始怀疑自己可能被集群驱逐的阈值时间。
+	// 如果节点在这段时间内未能检测到任何领导者活动，它将开始怀疑自己可能已被集群排除在外。
 	DefaultEvictionSuspicion = time.Minute * 10
 
-	// DefaultLeaderlessCheckInterval is the interval that a chain checks
-	// its own leadership status.
+	// DefaultLeaderlessCheckInterval 是链实例检查自身领导状态的默认间隔时间。
+	// 链实例会定期检查自己是否仍然是领导者，如果不是，它将采取适当的行动，比如放弃领导权或退出集群。
 	DefaultLeaderlessCheckInterval = time.Second * 10
 
-	// AbdicationMaxAttempts determines how many retries of leadership abdication we do
-	// for a transaction that removes ourselves from reconfiguration.
+	// AbdicationMaxAttempts 确定了在移除自身参与重新配置的事务中，放弃领导权的最大重试次数。
+	// 当节点尝试退出集群时，它可能会遇到一些问题，比如网络延迟或冲突，因此设置了重试机制。
+	// 如果在规定的尝试次数内仍无法成功放弃领导权，节点将采取进一步的措施，比如进入故障状态或寻求外部干预。
 	AbdicationMaxAttempts = 5
 )
 
 //go:generate counterfeiter -o mocks/configurator.go . Configurator
 
-// Configurator is used to configure the communication layer
-// when the chain starts.
+// Configurator 是一个接口，用于在链启动时配置通信层。
+// 当链启动时，它会被用来更新通信层的配置，以反映最新的网络拓扑。
+// 这通常涉及到添加或删除远程节点，以确保通信层能够正确地与当前的共识组成员通信。
 type Configurator interface {
+	// Configure 方法接收一个通道名和一个新节点的列表。
+	// 它应该更新通信层的配置，以包括或排除这些节点。
+	// 这样做是为了确保通信层能够与最新成员列表中的所有节点进行有效通信。
 	Configure(channel string, newNodes []cluster.RemoteNode)
 }
 
 //go:generate counterfeiter -o mocks/mock_rpc.go . RPC
 
-// RPC is used to mock the transport layer in tests.
+// RPC 接口用于在测试中模拟传输层的行为。
+// 它定义了共识参与者之间通信的基本方法，允许我们发送共识请求和提交请求到远程节点。
 type RPC interface {
+	// SendConsensus 方法用于向指定的目标节点（dest）发送共识请求（msg）。
+	// 这是共识算法（如Raft）中用于同步状态和达成一致决策的关键步骤之一。
+	// 如果在发送过程中发生错误，该方法应返回错误。
 	SendConsensus(dest uint64, msg *orderer.ConsensusRequest) error
+
+	// SendSubmit 方法用于向指定的目标节点（dest）发送提交请求（request）。
+	// 此方法还接受一个回调函数（report）来报告任何在异步处理中发生的错误。
+	// 这通常用于提交事务到共识组，等待最终确认。
 	SendSubmit(dest uint64, request *orderer.SubmitRequest, report func(err error)) error
 }
 
 //go:generate counterfeiter -o mocks/mock_blockpuller.go . BlockPuller
 
-// BlockPuller is used to pull blocks from other OSN
+// BlockPuller 接口定义了一个从其他 Orderer Service Node(OSN) 拉取区块的组件。
+// 它提供了以下功能：
+//
+// PullBlock: 根据给定的序列号(seq)从网络中拉取对应的区块。
+// HeightsByEndpoints: 返回一个映射，其中键是远程OSN的端点(endpoint)，值是该OSN上的最新区块高度。
+// Close: 关闭BlockPuller资源，例如关闭网络连接等。
 type BlockPuller interface {
+	// 根据区块序列号拉取区块
 	PullBlock(seq uint64) *common.Block
+	// 获取每个远程OSN的最新区块高度
 	HeightsByEndpoints() (map[string]uint64, error)
+	// 关闭BlockPuller并释放相关资源
 	Close()
 }
 
-// CreateBlockPuller is a function to create BlockPuller on demand.
-// It is passed into chain initializer so that tests could mock this.
+// CreateBlockPuller 是一个函数类型，用于按需创建 BlockPuller 实例。
+// 这个函数被传递给链初始化器，以便在测试中能够模拟 BlockPuller 的行为。
+// BlockPuller 是用于从其他节点拉取区块的组件，CreateBlockPuller 函数允许系统动态生成这个组件，
+// 提供了灵活性和可测试性，特别是在单元测试和集成测试中，可以使用假的（mock）BlockPuller 来替代真实的实现。
 type CreateBlockPuller func() (BlockPuller, error)
 
-// Options contains all the configurations relevant to the chain.
+// Options 结构体包含了与链raft相关的所有配置信息。
 type Options struct {
+	// RPCTimeout 是进行远程过程调用（RPC）时的超时时间。
 	RPCTimeout time.Duration
-	RaftID     uint64
 
+	// RaftID 是当前节点在Raft共识算法中的唯一标识符。
+	RaftID uint64
+
+	// Clock 是时间处理的接口，允许在测试环境中模拟时间流逝。
 	Clock clock.Clock
 
-	WALDir               string
-	SnapDir              string
+	// WALDir 是写入前日志（Write-Ahead Log）的存储目录。
+	WALDir string
+
+	// SnapDir 是快照文件的存储目录。
+	SnapDir string
+
+	// SnapshotIntervalSize 是触发快照创建的区块大小阈值。
 	SnapshotIntervalSize uint32
 
-	// This is configurable mainly for testing purpose. Users are not
-	// expected to alter this. Instead, DefaultSnapshotCatchUpEntries is used.
+	// SnapshotCatchUpEntries 是可配置的主要用于测试目的的参数。它表示在快照恢复时需要追加的条目数量。
 	SnapshotCatchUpEntries uint64
 
+	// MemoryStorage 是存储在内存中的数据结构，用于存储和检索Raft状态。
 	MemoryStorage MemoryStorage
-	Logger        *flogging.FabricLogger
 
-	TickInterval      time.Duration
-	ElectionTick      int
-	HeartbeatTick     int
-	MaxSizePerMsg     uint64
+	// Logger 是用于记录日志的结构体。
+	Logger *flogging.FabricLogger
+
+	// TickInterval 是Raft算法中心跳和选举的周期。
+	TickInterval time.Duration
+
+	// ElectionTick 是触发选举的tick次数。
+	ElectionTick int
+
+	// HeartbeatTick 是发送心跳的tick次数。
+	HeartbeatTick int
+
+	// MaxSizePerMsg 是单个Raft消息的最大尺寸。
+	MaxSizePerMsg uint64
+
+	// MaxInflightBlocks 是同时处理的未决块的最大数量。
 	MaxInflightBlocks int
 
-	// BlockMetadata and Consenters should only be modified while under lock
-	// of raftMetadataLock
+	// BlockMetadata 和 Consenters 应在 raftMetadataLock 锁定下进行修改。
+	// BlockMetadata 包含关于块元数据的信息。
 	BlockMetadata *etcdraft.BlockMetadata
-	Consenters    map[uint64]*etcdraft.Consenter
 
-	// MigrationInit is set when the node starts right after consensus-type migration
+	// Consenters 是当前共识组的成员列表。
+	Consenters map[uint64]*etcdraft.Consenter
+
+	// MigrationInit 是在共识类型迁移后启动节点时设置的标志。
 	MigrationInit bool
 
+	// Metrics 是用于收集和报告共识层性能指标的结构体。
 	Metrics *Metrics
-	Cert    []byte
 
-	EvictionSuspicion   time.Duration
+	// Cert 是节点的证书，用于身份验证和加密通信。
+	Cert []byte
+
+	// EvictionSuspicion 是怀疑节点被驱逐的等待时间。
+	EvictionSuspicion time.Duration
+
+	// LeaderCheckInterval 是检查领导权状态的间隔时间。
 	LeaderCheckInterval time.Duration
 }
 
@@ -143,105 +193,140 @@ type gc struct {
 	data  []byte
 }
 
-// Chain implements consensus.Chain interface.
+// Chain 结构体实现了共识层的 Chain 接口，它是 etcd/raft 状态机在特定通道上的具体实现。
 type Chain struct {
+	// configurator 用于配置和管理共识层的组件。
 	configurator Configurator
 
+	// rpc 是远程过程调用服务，用于处理外部请求和与其他节点的通信。
 	rpc RPC
 
-	raftID    uint64
+	// raftID 是 raft 状态机的唯一标识符，用于区分不同的 raft 群集。
+	raftID uint64
+	// channelID 是当前链所属的通道标识符，用于标识特定的业务逻辑和数据隔离。
 	channelID string
 
+	// lastKnownLeader 是上一个已知的领导者节点的 raftID，用于在领导者变更时的快速恢复。
 	lastKnownLeader uint64
-	ActiveNodes     atomic.Value
+	// ActiveNodes 是一个原子变量，用于存储当前活跃节点的列表，方便在集群中快速查找和通知。
+	ActiveNodes atomic.Value
 
-	submitC  chan *submit
-	applyC   chan apply
-	observeC chan<- raft.SoftState // Notifies external observer on leader change (passed in optionally as an argument for tests)
-	haltC    chan struct{}         // Signals to goroutines that the chain is halting
-	doneC    chan struct{}         // Closes when the chain halts
-	startC   chan struct{}         // Closes when the node is started
-	snapC    chan *raftpb.Snapshot // Signal to catch up with snapshot
-	gcC      chan *gc              // Signal to take snapshot
+	// submitC 是提交通道，用于接收来自客户端的提案。
+	submitC chan *submit
+	// applyC 是应用通道，用于接收 raft 状态机应用的条目，触发本地状态的更新。
+	applyC chan apply
+	// observeC 是观察者通道，用于通知外部观察者领导者的变更。
+	observeC chan<- raft.SoftState
+	// haltC 是停止通道，用于信号告知协程链正在停止。
+	haltC chan struct{}
+	// doneC 是完成通道，当链停止时关闭，用于等待链完全停止。
+	doneC chan struct{}
+	// startC 是启动通道，当节点启动时关闭，用于同步节点启动状态。
+	startC chan struct{}
+	// snapC 是快照通道，用于通知 raft 状态机追赶快照。
+	snapC chan *raftpb.Snapshot
+	// gcC 是垃圾回收通道，用于触发快照的生成和旧状态的清理。
+	gcC chan *gc
 
+	// errorCLock 和 errorC 用于控制和监控错误状态。
 	errorCLock sync.RWMutex
-	errorC     chan struct{} // returned by Errored()
+	errorC     chan struct{}
 
+	// raftMetadataLock 和 confChangeInProgress 用于控制配置变更的元数据。
 	raftMetadataLock     sync.RWMutex
 	confChangeInProgress *raftpb.ConfChange
-	justElected          bool // this is true when node has just been elected
-	configInflight       bool // this is true when there is config block or ConfChange in flight
-	blockInflight        int  // number of in flight blocks
+	// justElected 和 configInflight 用于标记节点状态和配置变更的执行状态。
+	justElected    bool
+	configInflight bool
+	// blockInflight 用于统计在飞行中的块的数量。
+	blockInflight int
 
-	clock clock.Clock // Tests can inject a fake clock
+	// clock 用于提供时间服务，测试时可注入假时钟。
+	clock clock.Clock
 
+	// support 是共识层的支持接口，用于访问账本、状态数据库等底层服务。
 	support consensus.ConsenterSupport
 
+	// lastBlock 和 appliedIndex 用于追踪最后一个应用的区块和当前已应用的条目索引。
 	lastBlock    *common.Block
 	appliedIndex uint64
 
-	// needed by snapshotting
-	sizeLimit        uint32 // SnapshotIntervalSize in bytes
-	accDataSize      uint32 // accumulative data size since last snapshot
+	// sizeLimit、accDataSize 和 lastSnapBlockNum 用于控制和追踪快照生成的时机和状态。
+	sizeLimit        uint32
+	accDataSize      uint32
 	lastSnapBlockNum uint64
-	confState        raftpb.ConfState // Etcdraft requires ConfState to be persisted within snapshot
+	// confState 用于存储 raft 状态机的配置状态，需在快照中持久化。
+	confState raftpb.ConfState
 
-	createPuller CreateBlockPuller // func used to create BlockPuller on demand
+	// createPuller 是一个函数，用于按需创建 BlockPuller 实例，实现区块的远程拉取。
+	createPuller CreateBlockPuller
 
-	fresh bool // indicate if this is a fresh raft node
+	// fresh 用于标记这是不是一个全新的 raft 节点，初始启动时使用。
+	fresh bool
 
-	// this is exported so that test can use `Node.Status()` to get raft node status.
+	// Node 是 raft 状态机的节点实例，对外暴露状态和操作。
 	Node *node
+	// opts 是raft链的选项配置，可能包含一些高级配置项或回调函数。
 	opts Options
 
+	// Metrics 是用于收集和报告链运行状态的指标。
 	Metrics *Metrics
-	logger  *flogging.FabricLogger
+	// logger 是日志记录器，用于记录调试和错误信息。
+	logger *flogging.FabricLogger
 
+	// periodicChecker 用于周期性地检查链的状态和执行维护任务。
 	periodicChecker *PeriodicCheck
 
+	// haltCallback 是停止回调函数，当链实例停止时会被调用，用于执行清理操作。
 	haltCallback func()
 
+	// statusReportMutex、consensusRelation 和 status 用于控制和报告链的运行状态。
 	statusReportMutex sync.Mutex
 	consensusRelation types.ConsensusRelation
 	status            types.Status
 
-	// BCCSP instance
+	// CryptoProvider 是 BCCSP 实例，用于加密、签名和验证等安全相关操作。
 	CryptoProvider bccsp.BCCSP
 
+	// leadershipTransferInProgress 用于标记领导权转移是否正在进行中。
 	leadershipTransferInProgress uint32
 }
 
-// NewChain constructs a chain object.
+// NewChain 构建了一个新的 Chain 对象，用于管理特定通道上的共识和通信。
 func NewChain(
-	support consensus.ConsenterSupport,
-	opts Options,
-	conf Configurator,
-	rpc RPC,
-	cryptoProvider bccsp.BCCSP,
-	f CreateBlockPuller,
-	haltCallback func(),
-	observeC chan<- raft.SoftState,
+	support consensus.ConsenterSupport, // 支持共识操作的接口，提供通道和共识相关的方法
+	rafts Options, // 配置选项，包括Raft ID、日志记录器、存储路径等
+	conf Configurator, // 配置管理器，用于更新和管理共识配置
+	rpc RPC, // 远程过程调用接口，用于与远程节点通信
+	cryptoProvider bccsp.BCCSP, // BCCSP（Blockchain Crypto Service Provider）接口，提供加密服务
+	f CreateBlockPuller, // 创建区块拉取器的函数，用于从其他节点拉取缺失的区块
+	haltCallback func(), // 回调函数，用于在共识停止时执行一些清理操作
+	observeC chan<- raft.SoftState, // 观察者通道，用于发送Raft软状态信息
 ) (*Chain, error) {
-	lg := opts.Logger.With("channel", support.ChannelID(), "node", opts.RaftID)
+	// 创建带有通道ID和节点ID的日志记录器
+	lg := rafts.Logger.With("channel", support.ChannelID(), "node", rafts.RaftID)
 
-	fresh := !wal.Exist(opts.WALDir)
-	storage, err := CreateStorage(lg, opts.WALDir, opts.SnapDir, opts.MemoryStorage)
+	// 检查WAL目录是否存在，用于判断是否是新链
+	fresh := !wal.Exist(rafts.WALDir)
+	storage, err := CreateStorage(lg, rafts.WALDir, rafts.SnapDir, rafts.MemoryStorage) // 创建存储，包括WAL和快照目录
 	if err != nil {
-		return nil, errors.Errorf("failed to restore persisted raft data: %s", err)
+		return nil, errors.Errorf("恢复持久化的Raft数据失败: %s", err) // 如果创建存储失败，返回错误
 	}
 
-	if opts.SnapshotCatchUpEntries == 0 {
+	// 设置SnapshotCatchUpEntries和SnapshotIntervalSize的默认值, 它表示在快照恢复时需要追加的条目数量。
+	if rafts.SnapshotCatchUpEntries == 0 {
 		storage.SnapshotCatchUpEntries = DefaultSnapshotCatchUpEntries
 	} else {
-		storage.SnapshotCatchUpEntries = opts.SnapshotCatchUpEntries
+		storage.SnapshotCatchUpEntries = rafts.SnapshotCatchUpEntries
 	}
 
-	sizeLimit := opts.SnapshotIntervalSize
+	// 触发快照创建的区块大小阈值。
+	sizeLimit := rafts.SnapshotIntervalSize
 	if sizeLimit == 0 {
 		sizeLimit = DefaultSnapshotIntervalSize
 	}
 
-	// get block number in last snapshot, if exists
+	// 获取最新快照中的区块编号
 	var snapBlkNum uint64
 	var cc raftpb.ConfState
 	if s := storage.Snapshot(); !raft.IsEmptySnap(s) {
@@ -250,143 +335,179 @@ func NewChain(
 		cc = s.Metadata.ConfState
 	}
 
+	// 获取通道上最后一个区块
 	b := support.Block(support.Height() - 1)
 	if b == nil {
-		return nil, errors.Errorf("failed to get last block")
+		return nil, errors.Errorf("获取最后一个区块失败")
 	}
-
+	// 创建 Chain 结构体实例，初始化其各个字段。
 	c := &Chain{
-		configurator:      conf,
-		rpc:               rpc,
-		channelID:         support.ChannelID(),
-		raftID:            opts.RaftID,
-		submitC:           make(chan *submit),
-		applyC:            make(chan apply),
-		haltC:             make(chan struct{}),
-		doneC:             make(chan struct{}),
-		startC:            make(chan struct{}),
-		snapC:             make(chan *raftpb.Snapshot),
-		errorC:            make(chan struct{}),
-		gcC:               make(chan *gc),
-		observeC:          observeC,
-		support:           support,
-		fresh:             fresh,
-		appliedIndex:      opts.BlockMetadata.RaftIndex,
-		lastBlock:         b,
-		sizeLimit:         sizeLimit,
-		lastSnapBlockNum:  snapBlkNum,
-		confState:         cc,
-		createPuller:      f,
-		clock:             opts.Clock,
-		haltCallback:      haltCallback,
-		consensusRelation: types.ConsensusRelationConsenter,
-		status:            types.StatusActive,
-		Metrics: &Metrics{
-			ClusterSize:             opts.Metrics.ClusterSize.With("channel", support.ChannelID()),
-			IsLeader:                opts.Metrics.IsLeader.With("channel", support.ChannelID()),
-			ActiveNodes:             opts.Metrics.ActiveNodes.With("channel", support.ChannelID()),
-			CommittedBlockNumber:    opts.Metrics.CommittedBlockNumber.With("channel", support.ChannelID()),
-			SnapshotBlockNumber:     opts.Metrics.SnapshotBlockNumber.With("channel", support.ChannelID()),
-			LeaderChanges:           opts.Metrics.LeaderChanges.With("channel", support.ChannelID()),
-			ProposalFailures:        opts.Metrics.ProposalFailures.With("channel", support.ChannelID()),
-			DataPersistDuration:     opts.Metrics.DataPersistDuration.With("channel", support.ChannelID()),
-			NormalProposalsReceived: opts.Metrics.NormalProposalsReceived.With("channel", support.ChannelID()),
-			ConfigProposalsReceived: opts.Metrics.ConfigProposalsReceived.With("channel", support.ChannelID()),
+		// 配置管理器和 RPC 服务初始化
+		configurator: conf, // conf 是配置管理器，用于管理共识层的配置。
+		rpc:          rpc,  // rpc 是远程过程调用服务，用于处理与外部的通信。
+
+		// 通道和 Raft 相关标识初始化
+		channelID: support.ChannelID(), // support.ChannelID() 返回当前链所属的通道标识符。
+		raftID:    rafts.RaftID,        // rafts.RaftID 是当前节点在 Raft 群集中的唯一标识符。
+
+		// 通道初始化，用于内部通信和状态控制
+		submitC: make(chan *submit),          // submitC 是用于接收提交请求的通道。
+		applyC:  make(chan apply),            // applyC 是用于接收应用结果的通道。
+		haltC:   make(chan struct{}),         // haltC 用于发送停止信号给 Chain 的内部协程。
+		doneC:   make(chan struct{}),         // doneC 在 Chain 停止后关闭，用于外部等待 Chain 完全停止。
+		startC:  make(chan struct{}),         // startC 在 Chain 启动后关闭，用于外部等待 Chain 完全启动。
+		snapC:   make(chan *raftpb.Snapshot), // snapC 用于通知 Chain 追赶快照。
+		errorC:  make(chan struct{}),         // errorC 在发生错误时关闭，用于外部检测 Chain 是否出现错误。
+		gcC:     make(chan *gc),              // gcC 用于通知 Chain 执行垃圾回收。
+
+		// 观察者通道初始化
+		observeC: observeC, // observeC 用于向外部观察者发送软状态更新，如领导权变更。
+
+		// 支持服务和新鲜度标志初始化
+		support: support, // support 是共识层的支持服务接口，用于访问账本、状态数据库等底层服务。
+		fresh:   fresh,   // fresh 标记 Chain 是否为新启动的。
+
+		// 最后应用的区块和快照控制字段初始化
+		appliedIndex:     rafts.BlockMetadata.RaftIndex, // raftIndex 是最后应用的区块在 Raft 日志中的索引。
+		lastBlock:        b,                             // b 是最后应用的区块。
+		sizeLimit:        sizeLimit,                     // sizeLimit 是快照生成的大小限制。
+		lastSnapBlockNum: snapBlkNum,                    // snapBlkNum 是上次快照的区块编号。
+
+		// 配置状态和拉取器初始化
+		confState:    cc, // cc 是当前的配置状态。
+		createPuller: f,  // f 是用于创建 BlockPuller 的函数，BlockPuller 用于从其他节点拉取区块。
+
+		// 时间服务和停止回调初始化
+		clock:        rafts.Clock,  // rafts.Clock 是时间服务，用于提供系统时钟。
+		haltCallback: haltCallback, // haltCallback 是在 Chain 停止时被调用的回调函数。
+
+		// 共识关系和状态初始化
+		consensusRelation: types.ConsensusRelationConsenter, // ConsensusRelationConsenter 表示共识关系类型。
+		status:            types.StatusActive,               // StatusActive 表示 Chain 当前处于活动状态。
+
+		// 监控指标初始化
+		Metrics: &Metrics{ // Metrics 是一组用于监控 Chain 运行状态的指标。
+			// 下面是一系列 Prometheus 监控指标的初始化，每个指标都与共识层的特定方面相关联。
+			ClusterSize:             rafts.Metrics.ClusterSize.With("channel", support.ChannelID()),             // ClusterSize 监控当前群集大小。
+			IsLeader:                rafts.Metrics.IsLeader.With("channel", support.ChannelID()),                // IsLeader 监控当前节点是否是领导者。
+			ActiveNodes:             rafts.Metrics.ActiveNodes.With("channel", support.ChannelID()),             // ActiveNodes 监控当前活跃节点数。
+			CommittedBlockNumber:    rafts.Metrics.CommittedBlockNumber.With("channel", support.ChannelID()),    // CommittedBlockNumber 监控已提交的区块数量。
+			SnapshotBlockNumber:     rafts.Metrics.SnapshotBlockNumber.With("channel", support.ChannelID()),     // SnapshotBlockNumber 监控快照的区块编号。
+			LeaderChanges:           rafts.Metrics.LeaderChanges.With("channel", support.ChannelID()),           // LeaderChanges 监控领导权变更次数。
+			ProposalFailures:        rafts.Metrics.ProposalFailures.With("channel", support.ChannelID()),        // ProposalFailures 监控提案失败次数。
+			DataPersistDuration:     rafts.Metrics.DataPersistDuration.With("channel", support.ChannelID()),     // DataPersistDuration 监控数据持久化耗时。
+			NormalProposalsReceived: rafts.Metrics.NormalProposalsReceived.With("channel", support.ChannelID()), // NormalProposalsReceived 监控接收到的常规提案数量。
+			ConfigProposalsReceived: rafts.Metrics.ConfigProposalsReceived.With("channel", support.ChannelID()), // ConfigProposalsReceived 监控接收到的配置变更提案数量。
 		},
-		logger:         lg,
-		opts:           opts,
-		CryptoProvider: cryptoProvider,
+
+		// 日志记录器和选项初始化
+		logger: lg,    // lg 是用于记录日志的日志记录器。
+		opts:   rafts, // rafts 是 Chain 的选项配置，可能包含高级配置项或回调函数。
+
+		// 密码服务提供者初始化
+		CryptoProvider: cryptoProvider, // cryptoProvider 是 BCCSP 实例，用于加密、签名和验证等安全相关操作。
 	}
 
-	// Sets initial values for metrics
-	c.Metrics.ClusterSize.Set(float64(len(c.opts.BlockMetadata.ConsenterIds)))
-	c.Metrics.IsLeader.Set(float64(0)) // all nodes start out as followers
-	c.Metrics.ActiveNodes.Set(float64(0))
-	c.Metrics.CommittedBlockNumber.Set(float64(c.lastBlock.Header.Number))
-	c.Metrics.SnapshotBlockNumber.Set(float64(c.lastSnapBlockNum))
+	// 设置监控指标的初始值
+	c.Metrics.ClusterSize.Set(float64(len(c.opts.BlockMetadata.ConsenterIds))) // 设置群集大小，即参与共识的节点数。
+	c.Metrics.IsLeader.Set(float64(0))                                         // 初始时所有节点都是跟随者，因此IsLeader设为0。
+	c.Metrics.ActiveNodes.Set(float64(0))                                      // 初始时活动节点数为0。
+	c.Metrics.CommittedBlockNumber.Set(float64(c.lastBlock.Header.Number))     // 设置已提交的区块数量，基于最后一个区块的编号。
+	c.Metrics.SnapshotBlockNumber.Set(float64(c.lastSnapBlockNum))             // 设置快照的区块编号。
 
-	// DO NOT use Applied option in config, see https://github.com/etcd-io/etcd/issues/10217
-	// We guard against replay of written blocks with `appliedIndex` instead.
+	// 配置Raft节点
 	config := &raft.Config{
-		ID:              c.raftID,
-		ElectionTick:    c.opts.ElectionTick,
-		HeartbeatTick:   c.opts.HeartbeatTick,
-		MaxSizePerMsg:   c.opts.MaxSizePerMsg,
-		MaxInflightMsgs: c.opts.MaxInflightBlocks,
-		Logger:          c.logger,
-		Storage:         c.opts.MemoryStorage,
-		// PreVote prevents reconnected node from disturbing network.
-		// See etcd/raft doc for more details.
-		PreVote:                   true,
-		CheckQuorum:               true,
-		DisableProposalForwarding: true, // This prevents blocks from being accidentally proposed by followers
+		// 设置Raft配置参数
+		ID:                        c.raftID,                 // 当前节点在Raft群集中的唯一ID。
+		ElectionTick:              c.opts.ElectionTick,      // 选举超时时间，单位为心跳周期数。
+		HeartbeatTick:             c.opts.HeartbeatTick,     // 心跳周期，用于保持与群集中其他节点的联系。
+		MaxSizePerMsg:             c.opts.MaxSizePerMsg,     // 单个消息的最大尺寸。
+		MaxInflightMsgs:           c.opts.MaxInflightBlocks, // 允许同时在飞行（未确认）的消息数量。
+		Logger:                    c.logger,                 // 日志记录器，用于记录Raft节点的操作和状态。
+		Storage:                   c.opts.MemoryStorage,     // 存储实现，用于存储和检索Raft日志和状态。
+		PreVote:                   true,                     // 预投票机制，防止重新连接的节点干扰网络。
+		CheckQuorum:               true,                     // 在选举和心跳时检查是否达到法定人数。
+		DisableProposalForwarding: true,                     // 禁止跟随者转发提案，防止意外提案区块。
 	}
 
+	// 创建Disseminator实例，用于在节点间传播信息,使用c.rpc作为RPC服务。
 	disseminator := &Disseminator{RPC: c.rpc}
-	disseminator.UpdateMetadata(nil) // initialize
-	c.ActiveNodes.Store([]uint64{})
+	disseminator.UpdateMetadata(nil) // 初始化Disseminator，可能涉及元数据的更新。
+	c.ActiveNodes.Store([]uint64{})  // 初始化活动节点列表，使用原子存储确保线程安全。
 
+	// 创建Node实例，即Raft节点
 	c.Node = &node{
-		chainID:      c.channelID,
-		chain:        c,
-		logger:       c.logger,
-		metrics:      c.Metrics,
-		storage:      storage,
-		rpc:          disseminator,
-		config:       config,
-		tickInterval: c.opts.TickInterval,
-		clock:        c.clock,
-		metadata:     c.opts.BlockMetadata,
+		chainID:      c.channelID,          // 当前节点所属的通道ID。
+		chain:        c,                    // 当前的Chain实例，用于处理事务和状态变更。
+		logger:       c.logger,             // 日志记录器，用于记录Node的操作和状态。
+		metrics:      c.Metrics,            // 监控指标，用于监控Node的运行状态。
+		storage:      storage,              // 存储实现，用于存储和检索区块链数据。
+		rpc:          disseminator,         // Disseminator实例，用于节点间的信息传播。
+		config:       config,               // Raft配置参数。
+		tickInterval: c.opts.TickInterval,  // Raft心跳周期，单位为时间间隔。
+		clock:        c.clock,              // 时间服务，用于提供系统时钟。
+		metadata:     c.opts.BlockMetadata, // 区块元数据，包含共识层的配置和状态信息。
 		tracker: &Tracker{
-			id:     c.raftID,
-			sender: disseminator,
-			gauge:  c.Metrics.ActiveNodes,
-			active: &c.ActiveNodes,
-			logger: c.logger,
+			id:     c.raftID,              // 节点ID，用于标识节点。
+			sender: disseminator,          // 发送者，用于发送消息到其他节点。
+			gauge:  c.Metrics.ActiveNodes, // 监控指标，用于监控活动节点的数量。
+			active: &c.ActiveNodes,        // 活动节点列表，用于维护当前活动的节点集合。
+			logger: c.logger,              // 日志记录器，用于记录Tracker的操作和状态。
 		},
 	}
 
-	return c, nil
+	return c, nil // 返回构建完成的Chain实例
 }
 
-// Start instructs the orderer to begin serving the chain and keep it current.
+// Start 函数指示排序服务开始为链提供服务并保持其最新状态。
 func (c *Chain) Start() {
-	c.logger.Infof("Starting Raft node")
+	c.logger.Infof("启动 Raft 节点") // 日志记录，表明正在启动 Raft 节点。
 
+	// 配置通信，如果配置失败，关闭 doneC 通道并返回，终止链的启动。
 	if err := c.configureComm(); err != nil {
-		c.logger.Errorf("Failed to start chain, aborting: +%v", err)
+		c.logger.Errorf("启动链失败，正在中止: +%v", err)
 		close(c.doneC)
 		return
 	}
 
+	// 判断是否为加入现有链
 	isJoin := c.support.Height() > 1
 	if isJoin && c.opts.MigrationInit {
-		isJoin = false
-		c.logger.Infof("Consensus-type migration detected, starting new raft node on an existing channel; height=%d", c.support.Height())
+		isJoin = false // 如果是共识类型迁移，视为新节点启动而非加入。
+		c.logger.Infof("检测到共识类型迁移，正在现有通道上启动新的 Raft 节点；高度=%d", c.support.Height())
 	}
+
+	// 调用 Node 的 start 方法，开始 Raft 节点的运行。
 	c.Node.start(c.fresh, isJoin)
 
+	// 关闭 startC 通道，表示链已经启动。
 	close(c.startC)
+	// 关闭 errorC 通道，表示链没有错误。
 	close(c.errorC)
 
+	// 启动垃圾回收协程，用于定期清理过期的快照和日志。
 	go c.gc()
+	// 启动主运行协程，负责处理提案、应用状态和通信等核心任务。
 	go c.run()
 
+	// 创建一个 EvictionSuspector 实例，用于检测节点是否可能被驱逐。
 	es := c.newEvictionSuspector()
 
+	// 设置检查领导权状态的间隔，默认为 DefaultLeaderlessCheckInterval，可由选项覆盖。
 	interval := DefaultLeaderlessCheckInterval
 	if c.opts.LeaderCheckInterval != 0 {
 		interval = c.opts.LeaderCheckInterval
 	}
 
+	// 创建并运行 PeriodicCheck 实例，定期检查并报告节点可能被驱逐的情况。
 	c.periodicChecker = &PeriodicCheck{
-		Logger:        c.logger,
-		Report:        es.confirmSuspicion,
-		ReportCleared: es.clearSuspicion,
-		CheckInterval: interval,
-		Condition:     c.suspectEviction,
+		Logger:        c.logger,            // 日志记录器，用于记录 PeriodicCheck 的操作和状态。
+		Report:        es.confirmSuspicion, // 当检测到可能被驱逐时，调用 es.confirmSuspicion 报告。
+		ReportCleared: es.clearSuspicion,   // 当确定没有被驱逐风险时，调用 es.clearSuspicion 清除报警。
+		CheckInterval: interval,            // 检查间隔，用于定期执行 Condition。
+		Condition:     c.suspectEviction,   // 检测条件，用于判断节点是否可能被驱逐。
 	}
-	c.periodicChecker.Run()
+	c.periodicChecker.Run() // 开始运行 PeriodicCheck，执行定期检查。
 }
 
 // Order submits normal type transactions for ordering.
@@ -1238,55 +1359,73 @@ func (c *Chain) isConfig(env *common.Envelope) (bool, error) {
 	return h.Type == int32(common.HeaderType_CONFIG) || h.Type == int32(common.HeaderType_ORDERER_TRANSACTION), nil
 }
 
+// configureComm 函数用于重新配置通信，例如在网络拓扑变化或节点加入/离开时。
 func (c *Chain) configureComm() error {
-	// Reset unreachable map when communication is reconfigured
+	// 当通信被重新配置时，重置不可达节点的映射。
 	c.Node.unreachableLock.Lock()
-	c.Node.unreachable = make(map[uint64]struct{})
+	c.Node.unreachable = make(map[uint64]struct{}) // 清空不可达节点的记录。
 	c.Node.unreachableLock.Unlock()
 
-	nodes, err := c.remotePeers()
+	// 获取远程排序节点列表。
+	nodes, err := c.remoteOrderers()
 	if err != nil {
-		return err
+		return err // 如果获取远程对等节点失败，直接返回错误。
 	}
 
+	// 使用获取到的节点列表重新配置共识层。
 	c.configurator.Configure(c.channelID, nodes)
-	return nil
+	return nil // 重新配置成功，返回 nil。
 }
 
-func (c *Chain) remotePeers() ([]cluster.RemoteNode, error) {
+// remoteOrderers 函数用于构建远程排序节点的信息列表。
+func (c *Chain) remoteOrderers() ([]cluster.RemoteNode, error) {
+	// 加读锁，确保在读取共识层元数据期间不会被写操作影响。
 	c.raftMetadataLock.RLock()
-	defer c.raftMetadataLock.RUnlock()
+	defer c.raftMetadataLock.RUnlock() // 释放读锁。
 
-	var nodes []cluster.RemoteNode
+	var nodes []cluster.RemoteNode // 初始化远程节点列表。
+
+	// 遍历共识层配置中的所有节点。
 	for raftID, consenter := range c.opts.Consenters {
-		// No need to know yourself
+		// 跳过自身，无需了解自己的信息。
 		if raftID == c.raftID {
 			continue
 		}
+
+		// 将服务器 TLS 证书从 PEM 格式转换为 DER 格式。
 		serverCertAsDER, err := pemToDER(consenter.ServerTlsCert, raftID, "server", c.logger)
 		if err != nil {
-			return nil, errors.WithStack(err)
+			return nil, errors.WithStack(err) // 如果转换失败，返回错误。
 		}
+
+		// 将客户端 TLS 证书从 PEM 格式转换为 DER 格式。
 		clientCertAsDER, err := pemToDER(consenter.ClientTlsCert, raftID, "client", c.logger)
 		if err != nil {
-			return nil, errors.WithStack(err)
+			return nil, errors.WithStack(err) // 如果转换失败，返回错误。
 		}
+
+		// 构建并添加远程节点信息至列表。
 		nodes = append(nodes, cluster.RemoteNode{
-			ID:            raftID,
-			Endpoint:      fmt.Sprintf("%s:%d", consenter.Host, consenter.Port),
-			ServerTLSCert: serverCertAsDER,
-			ClientTLSCert: clientCertAsDER,
+			ID:            raftID,                                               // 节点的 Raft ID。
+			Endpoint:      fmt.Sprintf("%s:%d", consenter.Host, consenter.Port), // 构建节点的通信端点。
+			ServerTLSCert: serverCertAsDER,                                      // 服务器的 TLS 证书。
+			ClientTLSCert: clientCertAsDER,                                      // 客户端的 TLS 证书。
 		})
 	}
-	return nodes, nil
+
+	return nodes, nil // 返回构建好的远程节点列表。
 }
 
+// pemToDER 函数用于将 PEM 格式的证书转换为 DER 编码的字节序列。
 func pemToDER(pemBytes []byte, id uint64, certType string, logger *flogging.FabricLogger) ([]byte, error) {
+	// 解码 PEM 格式的证书。
 	bl, _ := pem.Decode(pemBytes)
 	if bl == nil {
-		logger.Errorf("Rejecting PEM block of %s TLS cert for node %d, offending PEM is: %s", certType, id, string(pemBytes))
-		return nil, errors.Errorf("invalid PEM block")
+		// 如果解码失败，记录错误信息并返回错误。
+		logger.Errorf("拒绝节点 %d 的 %s TLS 证书的 PEM 块，违规的 PEM 内容为: %s", id, certType, string(pemBytes))
+		return nil, errors.Errorf("无效的 PEM 块")
 	}
+	// 返回 DER 编码的证书字节。
 	return bl.Bytes, nil
 }
 

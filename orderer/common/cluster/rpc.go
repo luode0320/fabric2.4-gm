@@ -35,42 +35,53 @@ type ClusterClient interface {
 	Step(ctx context.Context, opts ...grpc.CallOption) (orderer.Cluster_StepClient, error)
 }
 
-// RPC performs remote procedure calls to remote cluster nodes.
+// RPC 结构体定义了用于与远程集群节点执行远程过程调用（RPC）的组件和状态。
 type RPC struct {
-	consensusLock sync.Mutex
-	submitLock    sync.Mutex
-	Logger        *flogging.FabricLogger
-	Timeout       time.Duration
-	Channel       string
-	Comm          Communicator
-	lock          sync.RWMutex
-	StreamsByType map[OperationType]map[uint64]*Stream
+	consensusLock sync.Mutex             // 互斥锁，用于保护共识相关的操作，确保线程安全。
+	submitLock    sync.Mutex             // 互斥锁，用于保护提交操作，避免并发提交导致的问题。
+	Logger        *flogging.FabricLogger // 日志记录器，用于记录RPC模块的运行日志。
+
+	Timeout time.Duration // 设置RPC调用的超时时间，单位通常为毫秒。
+	Channel string        // 当前RPC调用所针对的通道名称。
+	Comm    Communicator  // 通信器接口，用于实际执行网络通信，发送和接收RPC调用。
+
+	lock          sync.RWMutex                         // 读写锁，用于保护StreamsByType字段，允许多个读取操作但只允许一个写入操作。
+	StreamsByType map[OperationType]map[uint64]*Stream // 按照操作类型分类的流集合，用于管理与不同类型的RPC操作相关的流。
+	// OperationType 是一个枚举类型，表示不同的RPC操作类型，如读取、写入等。
+	// Stream 是代表RPC会话的结构体，包含与特定RPC调用相关的状态和数据。
 }
 
-// NewStreamsByType returns a mapping of operation type to
-// a mapping of destination to stream.
+// NewStreamsByType 函数创建并返回一个映射，该映射的键是 OperationType（操作类型），
+// 值是另一个映射，这个内部映射的键是目的地节点的ID（uint64类型），值是与该目的地节点关联的 Stream 对象。
+// 这个函数初始化了共识操作和提交操作两种类型下的目的地到 Stream 的映射，
+// 为后续的通信提供了组织结构，便于管理和追踪不同操作类型下的通信流。
 func NewStreamsByType() map[OperationType]map[uint64]*Stream {
 	m := make(map[OperationType]map[uint64]*Stream)
-	m[ConsensusOperation] = make(map[uint64]*Stream)
-	m[SubmitOperation] = make(map[uint64]*Stream)
+	m[ConsensusOperation] = make(map[uint64]*Stream) // 初始化共识操作下的目的地到 Stream 的映射
+	m[SubmitOperation] = make(map[uint64]*Stream)    // 初始化提交操作下的目的地到 Stream 的映射
 	return m
 }
 
-// OperationType denotes a type of operation that the RPC can perform
-// such as sending a transaction, or a consensus related message.
+// OperationType 枚举类型表示RPC可以执行的操作类型，
+// 比如发送一个交易，或者是一个与共识相关的消息。
 type OperationType int
 
 const (
+	// ConsensusOperation 表示共识相关的操作，如投票、心跳等共识协议中的消息交互。
 	ConsensusOperation OperationType = iota
+
+	// SubmitOperation 表示提交操作，通常是指向Orderer提交交易或配置更新等数据的RPC调用。
 	SubmitOperation
 )
 
+// String 方法实现了fmt.Stringer接口，用于将OperationType转换为字符串表示形式。
+// 根据OperationType的值，返回相应的字符串描述。
 func (ot OperationType) String() string {
 	if ot == SubmitOperation {
-		return "transaction"
+		return "transaction" // 如果是SubmitOperation，返回"transaction"字符串
 	}
 
-	return "consensus"
+	return "consensus" // 否则，返回"consensus"字符串，假设为共识相关操作
 }
 
 // SendConsensus 将给定的 ConsensusRequest 消息传递给raft.Node实例。

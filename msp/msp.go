@@ -37,19 +37,23 @@ type IdentityDeserializer interface {
 // This file includes Membership service provider interface that covers the
 // needs of a peer membership service provider interface.
 
-// MSPManager is an interface defining a manager of one or more MSPs. This
-// essentially acts as a mediator to MSP calls and routes MSP related calls
-// to the appropriate MSP.
-// This object is immutable, it is initialized once and never changed.
+// MSPManager 接口定义了一个管理一个或多个MSP（Membership Service Provider）的服务。本质上，它充当MSP调用的中介，将与MSP相关的调用路由到适当的MSP实例。
+// 这个对象是不可变的，一旦初始化就不会改变。
 type MSPManager interface {
-
-	// IdentityDeserializer interface needs to be implemented by MSPManager
+	// IdentityDeserializer 接口需要由MSPManager实现，用于身份的反序列化。
 	IdentityDeserializer
 
-	// Setup the MSP manager instance according to configuration information
+	// Setup 方法用于根据配置信息设置MSP管理器实例。
+	// 参数:
+	// msps []MSP     // MSP实例列表
+	// 返回值:
+	// error           // 如果设置过程中出现错误，则返回非空错误
 	Setup(msps []MSP) error
 
-	// GetMSPs Provides a list of Membership Service providers
+	// GetMSPs 方法提供一个MSP实例的列表。
+	// 返回值:
+	// map[string]MSP   // 以MSPID为键的MSP实例映射
+	// error             // 如果获取MSP列表过程中出现错误，则返回非空错误
 	GetMSPs() (map[string]MSP, error)
 }
 

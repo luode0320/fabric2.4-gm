@@ -47,7 +47,7 @@ func (b *Bundle) ChannelConfig() Channel {
 	return b.channelConfig
 }
 
-// OrdererConfig returns the config.Orderer for the channel and whether the Orderer config exists.
+// OrdererConfig 返回通道的config.Orderer以及Orderer配置是否存在。
 func (b *Bundle) OrdererConfig() (Orderer, bool) {
 	result := b.channelConfig.OrdererConfig()
 	return result, result != nil
@@ -149,28 +149,39 @@ func (b *Bundle) ValidateNew(nb Resources) error {
 	return nil
 }
 
-// NewBundleFromEnvelope wraps the NewBundle function, extracting the needed
-// information from a full configtx
+// NewBundleFromEnvelope 函数从完整的配置信封中提取信息并创建一个新的 Bundle 对象。
+// 参数:
+// env *cb.Envelope       // 配置信封，包含了通道配置信息
+// bccsp bccsp.BCCSP      // 加密服务提供者，用于处理加密和解密操作
+//
+// 返回值:
+// *Bundle                 // 通道配置的 Bundle 对象
+// error                   // 错误信息，如果出现任何问题则返回非空错误
 func NewBundleFromEnvelope(env *cb.Envelope, bccsp bccsp.BCCSP) (*Bundle, error) {
+	// 将配置信封的 Payload 部分反序列化
 	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal payload from envelope")
+		return nil, errors.Wrap(err, "无法从信封中解封有效负载") // 如果反序列化失败，返回错误
 	}
 
+	// 从 Payload 的 Data 部分反序列化配置信封
 	configEnvelope, err := configtx.UnmarshalConfigEnvelope(payload.Data)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal config envelope from payload")
+		return nil, errors.Wrap(err, "无法从有效负载中取消编组配置信封") // 如果反序列化失败，返回错误
 	}
 
+	// 检查信封的 Header 部分是否为 nil
 	if payload.Header == nil {
-		return nil, errors.Errorf("envelope header cannot be nil")
+		return nil, errors.Errorf("有效负载头部不能为空") // 如果 Header 为 nil，返回错误
 	}
 
+	// 将 Header 的 ChannelHeader 部分反序列化
 	chdr, err := protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal channel header")
+		return nil, errors.Wrap(err, "反序列化通道标头失败") // 如果反序列化失败，返回错误
 	}
 
+	// 使用从配置信封中提取的通道 ID 和配置信息，结合 BCCSP 创建一个新的 Bundle 对象
 	return NewBundle(chdr.ChannelId, configEnvelope.Config, bccsp)
 }
 

@@ -20,108 +20,160 @@ import (
 
 var logger = flogging.MustGetLogger("localconfig")
 
-// TopLevel directly corresponds to the orderer config YAML.
+// TopLevel 结构体直接对应于Orderer配置的YAML文件内容。
 type TopLevel struct {
-	General              General
-	FileLedger           FileLedger
-	Kafka                Kafka
-	Debug                Debug
-	Consensus            Consensus
-	Operations           Operations
-	Metrics              Metrics
-	ChannelParticipation ChannelParticipation
-	Admin                Admin
+	General              General              // 通用配置，包含Orderer的基本信息和全局设置。
+	FileLedger           FileLedger           // 文件账本配置，用于指定账本数据的存储方式和位置。
+	Kafka                Kafka                // Kafka配置，如果使用Kafka作为共识算法时的相关设置。
+	Debug                Debug                // 调试配置，用于控制日志输出级别和调试信息的详细程度。
+	Consensus            Consensus            // 共识算法配置，用于指定共识算法的类型和相关参数。
+	Operations           Operations           // 操作配置，用于控制Orderer的操作行为，如监控和性能优化。
+	Metrics              Metrics              // 监控指标配置，用于定义度量信息的收集和报告策略。
+	ChannelParticipation ChannelParticipation // 通道参与配置，用于管理Orderer在不同通道中的参与策略。
+	Admin                Admin                // 管理员配置，用于定义管理员权限和认证机制。
 }
 
-// General 包含了应用于所有排序服务类型通用的配置信息。
+// General 结构体包含了适用于所有Orderer类型的基础配置信息。
 type General struct {
-	// ListenAddress 指定了排序服务监听的网络地址。
+	// ListenAddress 指定了Orderer服务监听的网络地址。
 	ListenAddress string
 
-	// ListenPort 指定了排序服务监听的端口号。
+	// ListenPort 指定了Orderer服务监听的端口号。
 	ListenPort uint16
 
-	// TLS 包含了Transport Layer Security (TLS) 相关的配置信息，用于安全通信。
+	// TLS 包含了传输层安全(Transport Layer Security, TLS)相关的配置信息，用于保障通信安全。
 	TLS TLS
 
-	// Cluster 包含了集群间通信的配置细节。
+	// Cluster 包含了集群内部通信的配置细节，确保集群内节点之间的有效协调。
 	Cluster Cluster
 
-	// Keepalive 定义了保持活动连接的策略，以防网络空闲时连接中断。
+	// Keepalive 定义了保持活动连接的策略，防止网络空闲时自动断开连接。
 	Keepalive Keepalive
 
-	// ConnectionTimeout 设定了对外部连接建立的超时时间。
+	// ConnectionTimeout 设置了建立外部连接时的超时时间，避免长时间等待无响应的连接尝试。
 	ConnectionTimeout time.Duration
 
-	// GenesisMethod 是遗留字段，仅为了兼容性保留，未来将由BootstrapMethod替代，用于指示创世区块的生成方法。
+	// GenesisMethod 是遗留字段，仅为兼容性保留，将来会被BootstrapMethod替代，用于指示如何生成创世区块。
 	GenesisMethod string
 
-	// GenesisFile 是遗留字段，仅为了兼容性保留，未来将由BootstrapFile替代，指定了创世区块或引导配置文件的路径。
+	// GenesisFile 是遗留字段，仅为兼容性保留，将来会被BootstrapFile替代，指定了创世区块或引导配置文件的位置。
 	GenesisFile string
 
-	// BootstrapMethod 指定了启动排序服务时使用的引导方法。
+	// BootstrapMethod 指定了启动Orderer服务时使用的引导方法，确保服务能正确初始化并加入网络。
 	BootstrapMethod string
 
-	// BootstrapFile 指定了排序服务启动时加载的引导配置文件路径。
+	// BootstrapFile 指定了启动Orderer服务时加载的引导配置文件路径，用于指导创世区块的创建或网络加入过程。
 	BootstrapFile string
 
-	// Profile 配置了性能剖析相关设置。
+	// Profile 配置了性能剖析相关设置，有助于诊断和优化服务性能。
 	Profile Profile
 
-	// LocalMSPDir 指向了本地成员服务提供者(MSP)的目录路径。
+	// LocalMSPDir 指向了本地成员服务提供者(Member Service Provider, MSP)的目录路径，用于身份管理和证书验证。
 	LocalMSPDir string
 
-	// LocalMSPID 指定了排序服务所属的本地MSP的标识符。
+	// LocalMSPID 指定了Orderer服务所属的本地MSP的唯一标识符，确保身份的唯一性和可识别性。
 	LocalMSPID string
 
-	// BCCSP 指定了区块链加密服务提供者(BCCSP)的配置选项，用于加密和解密操作。
+	// BCCSP 指定了区块链加密服务提供者(Blockchain Crypto Service Provider, BCCSP)的配置选项，用于加密和解密操作，保证交易的安全性。
 	BCCSP *bccsp.FactoryOpts
 
-	// Authentication 包含了身份验证相关的配置信息。
+	// Authentication 包含了身份验证相关的配置信息，确保只有授权用户可以访问Orderer服务。
 	Authentication Authentication
 
-	// MaxRecvMsgSize 设定了可接收消息的最大尺寸限制，单位为字节。
+	// MaxRecvMsgSize 设定了可接收消息的最大尺寸限制，单位为字节，防止过大的消息导致资源耗尽。
 	MaxRecvMsgSize int32
 
-	// MaxSendMsgSize 设定了可发送消息的最大尺寸限制，单位为字节。
+	// MaxSendMsgSize 设定了可发送消息的最大尺寸限制，单位为字节，确保消息传输效率和系统稳定性。
 	MaxSendMsgSize int32
 }
 
+// Cluster 结构体包含了集群内部通信的配置信息，用于设置集群成员之间的通信策略和安全参数。
 type Cluster struct {
-	ListenAddress                        string
-	ListenPort                           uint16
-	ServerCertificate                    string
-	ServerPrivateKey                     string
-	ClientCertificate                    string
-	ClientPrivateKey                     string
-	RootCAs                              []string
-	DialTimeout                          time.Duration
-	RPCTimeout                           time.Duration
-	ReplicationBufferSize                int
-	ReplicationPullTimeout               time.Duration
-	ReplicationRetryTimeout              time.Duration
+	// ListenAddress 指定了集群成员监听的网络地址。
+	ListenAddress string
+
+	// ListenPort 指定了集群成员监听的端口号。
+	ListenPort uint16
+
+	// ServerCertificate 指定了集群成员用于身份验证的服务器证书路径。
+	ServerCertificate string
+
+	// ServerPrivateKey 指定了集群成员用于加密和解密的私钥路径。
+	ServerPrivateKey string
+
+	// ClientCertificate 指定了集群成员用于相互认证的客户端证书路径。
+	ClientCertificate string
+
+	// ClientPrivateKey 指定了集群成员用于客户端认证的私钥路径。
+	ClientPrivateKey string
+
+	// RootCAs 是一个包含集群成员信任的根证书颁发机构的列表，用于验证其他成员的证书。
+	RootCAs []string
+
+	// DialTimeout 设置了集群成员间建立连接的超时时间。
+	DialTimeout time.Duration
+
+	// RPCTimeout 设置了远程过程调用（RPC）的超时时间。
+	RPCTimeout time.Duration
+
+	// ReplicationBufferSize 设置了复制缓冲区的大小，影响数据同步的效率。
+	ReplicationBufferSize int
+
+	// ReplicationPullTimeout 设置了拉取数据进行复制的超时时间。
+	ReplicationPullTimeout time.Duration
+
+	// ReplicationRetryTimeout 设置了数据复制重试的间隔时间。
+	ReplicationRetryTimeout time.Duration
+
+	// ReplicationBackgroundRefreshInterval 设置了背景刷新（数据同步）的间隔时间。
 	ReplicationBackgroundRefreshInterval time.Duration
-	ReplicationMaxRetries                int
-	SendBufferSize                       int
-	CertExpirationWarningThreshold       time.Duration
-	TLSHandshakeTimeShift                time.Duration
+
+	// ReplicationMaxRetries 设置了数据复制最大重试次数。
+	ReplicationMaxRetries int
+
+	// SendBufferSize 设置了发送缓冲区的大小，影响数据发送的效率。
+	SendBufferSize int
+
+	// CertExpirationWarningThreshold 设置了证书到期前的警告阈值，用于提前通知证书即将过期。
+	CertExpirationWarningThreshold time.Duration
+
+	// TLSHandshakeTimeShift 允许配置TLS握手过程中允许的时间偏移量，用于处理不同系统之间的时间同步问题。
+	TLSHandshakeTimeShift time.Duration
 }
 
-// Keepalive contains configuration for gRPC servers.
+// Keepalive 结构体包含了gRPC服务器的保活配置，用于维护长连接的健康状态。
 type Keepalive struct {
+	// ServerMinInterval 设置了服务器发送保活探测的最小间隔时间，客户端必须至少以这个频率回应。
 	ServerMinInterval time.Duration
-	ServerInterval    time.Duration
-	ServerTimeout     time.Duration
+
+	// ServerInterval 设置了服务器发送保活探测的间隔时间，用于定期检查连接状态。
+	ServerInterval time.Duration
+
+	// ServerTimeout 设置了服务器等待客户端回应保活探测的超时时间，超过该时间未收到回应将视为连接失败。
+	ServerTimeout time.Duration
 }
 
-// TLS contains configuration for TLS connections.
+// TLS 结构体包含了传输层安全（Transport Layer Security, TLS）连接的配置信息。
 type TLS struct {
-	Enabled               bool
-	PrivateKey            string
-	Certificate           string
-	RootCAs               []string
-	ClientAuthRequired    bool
-	ClientRootCAs         []string
+	// Enabled 控制TLS是否启用。如果设为true，则所有网络通信将使用TLS进行加密。
+	Enabled bool
+
+	// PrivateKey 指定服务器的私钥文件路径，用于TLS握手过程中的身份验证。
+	PrivateKey string
+
+	// Certificate 指定服务器的公钥证书文件路径，用于客户端验证服务器的身份。
+	Certificate string
+
+	// RootCAs 是一个包含根证书颁发机构（CA）的列表，用于验证远程对等方的证书链。
+	RootCAs []string
+
+	// ClientAuthRequired 表示是否需要客户端认证。如果设为true，客户端在连接时也必须提供有效的证书。
+	ClientAuthRequired bool
+
+	// ClientRootCAs 是一个包含用于验证客户端证书的根CA列表。
+	ClientRootCAs []string
+
+	// TLSHandshakeTimeShift 允许配置TLS握手过程中允许的时间偏移量，用于处理不同系统之间的时间同步问题。
 	TLSHandshakeTimeShift time.Duration
 }
 
@@ -132,10 +184,12 @@ type SASLPlain struct {
 	Password string
 }
 
-// Authentication contains configuration parameters related to authenticating
-// client messages.
+// Authentication 结构体包含了与客户端消息认证相关的配置参数。
 type Authentication struct {
-	TimeWindow         time.Duration
+	// TimeWindow 设置了一个时间窗口，在此窗口内的消息被视为有效，用于防止重放攻击和处理时钟偏差。
+	TimeWindow time.Duration
+
+	// NoExpirationChecks 表示是否禁用证书过期检查，默认情况下，系统会检查证书的有效期，若设为true，则跳过此检查。
 	NoExpirationChecks bool
 }
 

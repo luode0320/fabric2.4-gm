@@ -37,11 +37,13 @@ type ApplicationOrg interface {
 	AnchorPeers() []*pb.AnchorPeer
 }
 
-// OrdererOrg stores the per org orderer config.
+// OrdererOrg 是一个接口，用于存储特定于组织的排序服务配置信息。
 type OrdererOrg interface {
+	// Org 接口可能包含通用的组织配置信息，这里 OrdererOrg 实现了该接口，意味着它继承了所有 Org 接口的方法和属性。
 	Org
 
-	// Endpoints returns the endpoints of orderer nodes.
+	// Endpoints 方法用于返回排序节点的端点列表，这些端点是客户端与排序服务通信的网络地址。
+	// 返回的每个字符串都代表了一个排序节点的网络位置，例如可以是 "hostname:port" 形式的地址。
 	Endpoints() []string
 }
 

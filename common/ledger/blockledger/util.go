@@ -91,7 +91,20 @@ func CreateNextBlock(rl Reader, messages []*cb.Envelope) *cb.Block {
 	return block
 }
 
-// GetBlock is a utility method for retrieving a single block
+// GetBlock 是一个实用方法，用于从区块链中检索单个区块。
+// 参数：
+// rl - Reader 接口，用于读取区块链数据。
+// index - 要检索的区块的索引号（区块高度）。
+//
+// 返回值：
+// *cb.Block - 返回指定索引号的区块数据。如果区块不存在或读取失败，则返回nil。
+//
+// 功能说明：
+// 本方法通过传入的Reader接口实例rl来定位并读取区块链中指定索引号index的区块。
+// 它首先使用rl的Iterator方法创建一个迭代器，该迭代器指向区块链中索引为index的区块位置。
+// 如果迭代器创建成功，将调用Next方法来获取下一个区块数据，这里下一个区块实际上就是目标区块，
+// 因为迭代器已经定位到了正确的区块位置。如果区块数据获取成功，返回该区块数据；
+// 如果获取失败（例如，区块不存在或读取异常），则返回nil。
 func GetBlock(rl Reader, index uint64) *cb.Block {
 	iterator, _ := rl.Iterator(&ab.SeekPosition{
 		Type: &ab.SeekPosition_Specified{

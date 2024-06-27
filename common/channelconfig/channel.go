@@ -136,7 +136,7 @@ func (cc *ChannelConfig) MSPManager() msp.MSPManager {
 	return cc.mspManager
 }
 
-// OrdererConfig returns the orderer config associated with this channel
+// OrdererConfig 返回与此通道关联的orderer配置
 func (cc *ChannelConfig) OrdererConfig() *OrdererConfig {
 	return cc.ordererConfig
 }

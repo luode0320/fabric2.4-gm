@@ -30,37 +30,43 @@ type ChannelInfoShort struct {
 	URL string `json:"url"`
 }
 
-// ConsensusRelation represents the relationship between the orderer and the channel's consensus cluster.
+// ConsensusRelation 表示排序者和通道的共识集群之间的关系。
 type ConsensusRelation string
 
 const (
-	// The orderer is a cluster consenter of a cluster consensus protocol (e.g. etcdraft) for a specific channel.
-	// That is, the orderer is in the consenters set of the channel.
+	// ConsensusRelationConsenter 表示Orderer是特定通道中集群共识协议（例如etcdraft）的集群共识者。
+	// 即，Orderer位于通道的共识者集合中，直接参与共识决策。
 	ConsensusRelationConsenter ConsensusRelation = "consenter"
-	// The orderer is following a cluster consensus protocol by pulling blocks from other orderers.
-	// The orderer is NOT in the consenters set of the channel.
+
+	// ConsensusRelationFollower 表示Orderer通过从其他Orderer拉取区块的方式跟随集群共识协议。
+	// Orderer并不在通道的共识者集合中，而是作为跟随者参与。
 	ConsensusRelationFollower ConsensusRelation = "follower"
-	// The orderer is NOT in the consenters set of the channel, and is just tracking (polling) the last config block
-	// of the channel in order to detect when it is added to the channel.
+
+	// ConsensusRelationConfigTracker 表示Orderer不在通道的共识者集合中，而是仅跟踪（轮询）通道的最后一个配置区块，
+	// 以便检测何时被添加到通道中，通常用于准备加入共识组的初始阶段。
 	ConsensusRelationConfigTracker ConsensusRelation = "config-tracker"
-	// The orderer runs a non-cluster consensus type, solo or kafka.
+
+	// ConsensusRelationOther 表示Orderer运行的是非集群型共识算法，如Solo或Kafka共识。
+	// 这类Orderer不参与集群共识决策。
 	ConsensusRelationOther ConsensusRelation = "other"
 )
 
-// Status represents the degree by which the orderer had caught up with the rest of the cluster after joining the
-// channel (either as a consenter or a follower).
+// Status 类型表示Orderer在加入通道后（无论是作为共识者还是跟随者）相对于集群其他成员的追赶程度。
 type Status string
 
 const (
-	// The orderer is active in the channel's consensus protocol, or following the cluster,
-	// with block height > the join-block number. (Height is last block number +1).
+	// StatusActive 表示Orderer在通道的共识协议中处于活跃状态，或者作为跟随者与集群同步，
+	// 且区块高度大于加入区块的编号。（高度为最后一个区块编号+1）
 	StatusActive Status = "active"
-	// The orderer is catching up with the cluster by pulling blocks from other orderers,
-	// with block height <= the join-block number.
+
+	// StatusOnBoarding 表示Orderer正在通过从其他Orderer拉取区块的方式追赶集群，
+	// 且区块高度小于等于加入区块的编号。
 	StatusOnBoarding Status = "onboarding"
-	// The orderer is not storing any blocks for this channel.
+
+	// StatusInactive 表示Orderer并未为此通道存储任何区块。
 	StatusInactive Status = "inactive"
-	// The last orderer operation against the channel failed.
+
+	// StatusFailed 表示上一次Orderer对通道的操作失败。
 	StatusFailed Status = "failed"
 )
 

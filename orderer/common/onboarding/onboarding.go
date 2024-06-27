@@ -269,16 +269,16 @@ type chainCreation struct {
 	genesisBlock *common.Block
 }
 
-// TrackChain tracks a chain with the given name, and calls the given callback
-// when this chain should be activated.
+// TrackChain 方法用于追踪一个具有给定名称的链，并在该链应该被激活时调用给定的回调函数。
+// 这个方法在链的状态从非活动转变为活动时触发链的创建或重新激活过程。
 func (i *InactiveChainReplicator) TrackChain(chain string, genesisBlock *common.Block, createChainCallback func()) {
-	i.lock.Lock()
-	defer i.lock.Unlock()
+	i.lock.Lock()         // 加锁以确保线程安全
+	defer i.lock.Unlock() // 解锁，保证临界区的正确退出
 
-	i.logger.Infof("Adding %s to the set of chains to track", chain)
-	i.chains2CreationCallbacks[chain] = chainCreation{
-		genesisBlock: genesisBlock,
-		create:       createChainCallback,
+	i.logger.Infof("将 %s 添加到待追踪的链集合中", chain)          // 记录日志信息
+	i.chains2CreationCallbacks[chain] = chainCreation{ // 将链的信息和回调函数关联起来
+		genesisBlock: genesisBlock,        // 创世区块信息
+		create:       createChainCallback, // 创建链的回调函数
 	}
 }
 

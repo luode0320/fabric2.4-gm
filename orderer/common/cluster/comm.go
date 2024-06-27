@@ -52,15 +52,18 @@ type Handler interface {
 	OnSubmit(channel string, sender uint64, req *orderer.SubmitRequest) error
 }
 
-// RemoteNode represents a cluster member
+// RemoteNode 结构体代表了集群中的一个成员节点。
 type RemoteNode struct {
-	// ID is unique among all members, and cannot be 0.
+	// ID 是该成员节点在集群中的唯一标识符，且不能为 0。
 	ID uint64
-	// Endpoint is the endpoint of the node, denoted in %s:%d format
+
+	// Endpoint 是节点的通信端点，格式为 "%s:%d"，其中 %s 表示主机名或 IP 地址，%d 表示端口号。
 	Endpoint string
-	// ServerTLSCert is the DER encoded TLS server certificate of the node
+
+	// ServerTLSCert 是节点的 TLS 服务器证书，以 DER 编码的字节序列形式存储。
 	ServerTLSCert []byte
-	// ClientTLSCert is the DER encoded TLS client certificate of the node
+
+	// ClientTLSCert 是节点的 TLS 客户端证书，同样以 DER 编码的字节序列形式存储。
 	ClientTLSCert []byte
 }
 
@@ -72,39 +75,70 @@ func (rm RemoteNode) String() string {
 
 //go:generate mockery -dir . -name Communicator -case underscore -output ./mocks/
 
-// Communicator defines communication for a consenter
+// Communicator 接口定义了共识者进行通信的标准方式和能力。
 type Communicator interface {
-	// Remote returns a RemoteContext for the given RemoteNode ID in the context
-	// of the given channel, or error if connection cannot be established, or
-	// the channel wasn't configured
+	// Remote 方法为给定的通道名称和远程节点ID创建或返回一个 RemoteContext 对象，
+	// 如果因无法建立连接或通道未在配置中找到，则返回错误。
+	// RemoteContext 对象封装了与远程节点通信所需的上下文和功能，
+	// 包括但不限于发送消息、接收响应以及管理底层的网络连接。
 	Remote(channel string, id uint64) (*RemoteContext, error)
-	// Configure configures the communication to connect to all
-	// given members, and disconnect from any members not among the given
-	// members.
+
+	// Configure 方法允许重新配置通信器，使其连接到所有指定的成员，
+	// 并断开与那些不再属于成员列表的节点的连接。
+	// 这在共识组的成员资格发生变化时非常关键，例如当有新节点加入或现有节点离开时，
+	// 确保通信器总是与当前有效的共识组成员保持通信。
 	Configure(channel string, members []RemoteNode)
-	// Shutdown shuts down the communicator
+
+	// Shutdown 方法用于关闭通信器，释放所有相关的网络资源，
+	// 包括但不限于网络连接、线程池和缓存区。
+	// 这个方法确保了在共识者退出或系统关闭时，所有资源都能够被优雅地回收，
+	// 避免资源泄露和潜在的系统不稳定。
 	Shutdown()
 }
 
-// MembersByChannel is a mapping from channel name
-// to MemberMapping
+// MembersByChannel 是来自通道名称的映射到MemberMapping
 type MembersByChannel map[string]MemberMapping
 
-// Comm implements Communicator
+// Comm 结构体实现了 Communicator 接口，用于管理与多个节点的通信。
 type Comm struct {
+	// MinimumExpirationWarningInterval 是一个时间持续值，表示在证书到期前发出警告的最短间隔。
 	MinimumExpirationWarningInterval time.Duration
-	CertExpWarningThreshold          time.Duration
-	shutdownSignal                   chan struct{}
-	shutdown                         bool
-	SendBufferSize                   int
-	Lock                             sync.RWMutex
-	Logger                           *flogging.FabricLogger
-	ChanExt                          ChannelExtractor
-	H                                Handler
-	Connections                      *ConnectionStore
-	Chan2Members                     MembersByChannel
-	Metrics                          *Metrics
-	CompareCertificate               CertificateComparator
+
+	// CertExpWarningThreshold 是一个时间持续值，表示在证书到期前多少时间开始发出警告。
+	CertExpWarningThreshold time.Duration
+
+	// shutdownSignal 是一个通道，用于通知 Comm 实例停止所有正在进行的通信并释放资源。
+	shutdownSignal chan struct{}
+
+	// shutdown 是一个布尔值，表示 Comm 是否已经被关闭。
+	shutdown bool
+
+	// SendBufferSize 是一个整数值，表示发送缓冲区的大小。
+	SendBufferSize int
+
+	// Lock 是一个读写锁，用于保护 Comm 的内部状态，确保线程安全。
+	Lock sync.RWMutex
+
+	// Logger 是一个日志记录器，用于记录 Comm 的操作和状态。
+	Logger *flogging.FabricLogger
+
+	// ChanExt 是一个 ChannelExtractor 接口实例，用于从消息中提取通道信息。
+	ChanExt ChannelExtractor
+
+	// H 是一个 Handler 接口实例，用于处理来自远程节点的消息。
+	H Handler
+
+	// Connections 是一个 ConnectionStore 指针，用于存储和管理与远程节点的连接。
+	Connections *ConnectionStore
+
+	// Chan2Members 是一个 MembersByChannel 映射，用于存储每个通道的成员信息。
+	Chan2Members MembersByChannel
+
+	// Metrics 是一个 Metrics 指针，用于收集和报告 Comm 的性能指标。
+	Metrics *Metrics
+
+	// CompareCertificate 是一个 CertificateComparator 接口实例，用于比较证书的有效性。
+	CompareCertificate CertificateComparator
 }
 
 type requestContext struct {
@@ -163,56 +197,70 @@ func (c *Comm) requestContext(ctx context.Context, msg proto.Message) (*requestC
 	}, nil
 }
 
-// Remote obtains a RemoteContext linked to the destination node on the context
-// of a given channel
+// Remote 方法从给定的通道上下文中获取与目标节点关联的 RemoteContext。
+// 这个方法首先锁定通信器的状态，确保在读取或修改成员映射时的一致性。
+// 如果通信器已被关闭，立即返回错误。
+// 然后，它查找指定通道的成员映射，如果通道不存在，返回错误。
+// 接下来，根据节点ID查找成员，如果找不到对应的成员，返回错误。
+// 如果找到的成员是活动的，直接返回其 RemoteContext。
+// 如果成员处于非活动状态，尝试激活它，并创建一个新的 RemoteContext。
+// 如果激活过程中出现错误，返回错误；否则，返回新创建的 RemoteContext。
 func (c *Comm) Remote(channel string, id uint64) (*RemoteContext, error) {
-	c.Lock.RLock()
-	defer c.Lock.RUnlock()
+	c.Lock.RLock()         // 加读锁以安全地访问成员映射
+	defer c.Lock.RUnlock() // 在方法结束时释放读锁
 
-	if c.shutdown {
-		return nil, errors.New("communication has been shut down")
-	}
-
-	mapping, exists := c.Chan2Members[channel]
-	if !exists {
-		return nil, errors.Errorf("channel %s doesn't exist", channel)
-	}
-	stub := mapping.ByID(id)
-	if stub == nil {
-		return nil, errors.Errorf("node %d doesn't exist in channel %s's membership", id, channel)
+	if c.shutdown { // 检查通信器是否已关闭
+		return nil, errors.New("通信已经关闭") // 如果已关闭，返回错误
 	}
 
-	if stub.Active() {
-		return stub.RemoteContext, nil
+	mapping, exists := c.Chan2Members[channel] // 查找通道的成员映射
+	if !exists {                               // 如果通道不存在
+		return nil, errors.Errorf("通道 %s 不存在", channel) // 返回错误
+	}
+	stub := mapping.ByID(id) // 根据节点ID查找成员
+	if stub == nil {         // 如果找不到成员
+		return nil, errors.Errorf("节点 %d 在通道 %s 的成员列表中不存在", id, channel) // 返回错误
 	}
 
-	err := stub.Activate(c.createRemoteContext(stub, channel))
-	if err != nil {
-		return nil, errors.WithStack(err)
+	if stub.Active() { // 如果成员是活动的
+		return stub.RemoteContext, nil // 直接返回 RemoteContext
 	}
-	return stub.RemoteContext, nil
+
+	err := stub.Activate(c.createRemoteContext(stub, channel)) // 尝试激活成员并创建 RemoteContext
+	if err != nil {                                            // 如果激活失败
+		return nil, errors.WithStack(err) // 返回错误
+	}
+	return stub.RemoteContext, nil // 返回新创建的 RemoteContext
 }
 
-// Configure configures the channel with the given RemoteNodes
+// Configure 函数用于使用给定的 RemoteNode 列表来配置指定的通道。
 func (c *Comm) Configure(channel string, newNodes []RemoteNode) {
+	// 遍历新节点列表，打印日志信息，显示即将加入的节点详情。
 	for _, node := range newNodes {
-		c.Logger.Infof("进入, 频道: %s, 节点: [ID:%d,Endpoint:%s]", channel, node.ID, node.Endpoint)
+		c.Logger.Infof("加入共识, 通道: %s, 节点: [ID:%d,Endpoint:%s]", channel, node.ID, node.Endpoint)
 	}
-	defer c.Logger.Infof("Exiting")
+	// 打印退出日志信息。
+	defer c.Logger.Infof("退出")
 
+	// 获取写锁，确保在配置过程中不会有其他并发写操作影响。
 	c.Lock.Lock()
 	defer c.Lock.Unlock()
 
+	// 如果需要，创建关闭信号。
 	c.createShutdownSignalIfNeeded()
 
+	// 检查是否已触发关闭，如果是，则直接返回。
 	if c.shutdown {
 		return
 	}
 
+	// 记录配置变更前正在使用的服务器证书。
 	beforeConfigChange := c.serverCertsInUse()
-	// Update the channel-scoped mapping with the new nodes
+
+	// 更新通道级别的成员映射，使用新的节点列表。
 	c.applyMembershipConfig(channel, newNodes)
-	// Close connections to nodes that are not present in the new membership
+
+	// 清理不再新成员列表中的节点的连接。
 	c.cleanUnusedConnections(beforeConfigChange)
 }
 
@@ -253,17 +301,22 @@ func (c *Comm) cleanUnusedConnections(serverCertsBeforeConfig StringSet) {
 	}
 }
 
-// serverCertsInUse returns the server certificates that are in use
-// represented as strings.
+// serverCertsInUse 函数返回当前正在使用的服务器证书，表示为字符串集合。
 func (c *Comm) serverCertsInUse() StringSet {
+	// 初始化一个空的字符串集合，用于存储正在使用的服务器证书。
 	endpointsInUse := make(StringSet)
+
+	// 遍历通道到成员的映射，收集所有正在使用的服务器证书。
 	for _, mapping := range c.Chan2Members {
+		// 调用 ServerCertificates 方法，获取当前映射下的所有服务器证书。
 		endpointsInUse.union(mapping.ServerCertificates())
 	}
+
+	// 返回收集到的正在使用的服务器证书集合。
 	return endpointsInUse
 }
 
-// applyMembershipConfig sets the given RemoteNodes for the given channel
+// applyMembershipConfig 为给定通道设置给定的RemoteNodes
 func (c *Comm) applyMembershipConfig(channel string, newNodes []RemoteNode) {
 	mapping := c.getOrCreateMapping(channel)
 	newNodeIDs := make(map[uint64]struct{})
@@ -273,11 +326,11 @@ func (c *Comm) applyMembershipConfig(channel string, newNodes []RemoteNode) {
 		c.updateStubInMapping(channel, mapping, node)
 	}
 
-	// Remove all stubs without a corresponding node
-	// in the new nodes
+	// 删除所有没有对应节点的存根
+	// 在新节点中
 	mapping.Foreach(func(id uint64, stub *Stub) {
 		if _, exists := newNodeIDs[id]; exists {
-			c.Logger.Info(id, "存在于通道的新旧成员中", channel, ", 正在跳过其停用")
+			c.Logger.Debug(id, "存在于通道的新旧成员中", channel, ", 正在跳过其停用")
 			return
 		}
 		c.Logger.Info("已停用节点", id, "谁是端点", stub.Endpoint, "因为它已从会员中删除")
@@ -286,87 +339,97 @@ func (c *Comm) applyMembershipConfig(channel string, newNodes []RemoteNode) {
 	})
 }
 
-// updateStubInMapping updates the given RemoteNode and adds it to the MemberMapping
+// updateStubInMapping 更新给定的RemoteNode并将其添加到MemberMapping
 func (c *Comm) updateStubInMapping(channel string, mapping MemberMapping, node RemoteNode) {
 	stub := mapping.ByID(node.ID)
 	if stub == nil {
-		c.Logger.Info("为节点分配", node.ID, "的端点", node.Endpoint, "用于通道", channel)
+		c.Logger.Info("节点", node.ID, "分配", node.Endpoint, "用于通道", channel)
 		stub = &Stub{}
 	}
 
-	// Check if the TLS server certificate of the node is replaced
-	// and if so - then deactivate the stub, to trigger
-	// a re-creation of its gRPC connection
+	// 检查节点的TLS服务器证书是否被替换
+	// 如果是这样-那么停用存根，以触发
+	// 重新创建其gRPC连接
 	if !bytes.Equal(stub.ServerTLSCert, node.ServerTLSCert) {
 		c.Logger.Info("停用节点", node.ID, "在通道中", channel,
 			"的端点", node.Endpoint, "由于TLS证书更改")
 		stub.Deactivate()
 	}
 
-	// Overwrite the stub Node data with the new data
+	// 用新数据覆盖存根节点数据
 	stub.RemoteNode = node
 
-	// Put the stub into the mapping
+	// 将存根放入映射中
 	mapping.Put(stub)
 
-	// Check if the stub needs activation.
+	// 检查存根是否需要激活。
 	if stub.Active() {
 		return
 	}
 
-	// Activate the stub
+	// 激活存根
 	stub.Activate(c.createRemoteContext(stub, channel))
 }
 
-// createRemoteStub returns a function that creates a RemoteContext.
-// It is used as a parameter to Stub.Activate() in order to activate
-// a stub atomically.
+// createRemoteContext 函数返回一个创建 RemoteContext 的函数。
+// 这个函数被作为参数传递给 Stub.Activate() 方法，用于原子性地激活一个 stub。
 func (c *Comm) createRemoteContext(stub *Stub, channel string) func() (*RemoteContext, error) {
 	return func() (*RemoteContext, error) {
+		// 解析服务器 TLS 证书
 		cert, err := common.ParseCertificate(stub.ServerTLSCert)
 		if err != nil {
+			// 如果解析失败，编码证书为 PEM 格式并记录错误日志
 			pemString := string(pem.EncodeToMemory(&pem.Block{Bytes: stub.ServerTLSCert}))
-			c.Logger.Errorf("Invalid DER for channel %s, endpoint %s, ID %d: %v", channel, stub.Endpoint, stub.ID, pemString)
-			return nil, errors.Wrap(err, "invalid certificate DER")
+			c.Logger.Errorf("通道 %s 的无效 DER，端点 %s，ID %d: %v", channel, stub.Endpoint, stub.ID, pemString)
+			return nil, errors.Wrap(err, "无效的证书 DER")
 		}
 
-		c.Logger.Debug("Connecting to", stub.RemoteNode, "for channel", channel)
+		// 输出正在连接的远程节点和频道信息
+		c.Logger.Debug("正在连接到", stub.RemoteNode, "用于通道", channel)
 
+		// 从 Connections 中获取与指定端点的连接
 		conn, err := c.Connections.Connection(stub.Endpoint, stub.ServerTLSCert)
 		if err != nil {
-			c.Logger.Warningf("Unable to obtain connection to %d(%s) (channel %s): %v", stub.ID, stub.Endpoint, channel, err)
+			// 如果获取连接失败，记录警告日志并返回错误
+			c.Logger.Warningf("无法获取 %d(%s) 的连接（通道 %s）: %v", stub.ID, stub.Endpoint, channel, err)
 			return nil, err
 		}
 
+		// 定义一个探查连接状态的函数
 		probeConnection := func(conn *grpc.ClientConn) error {
 			connState := conn.GetState()
+			// 如果连接状态为 Connecting，返回错误
 			if connState == connectivity.Connecting {
-				return errors.Errorf("connection to %d(%s) is in state %s", stub.ID, stub.Endpoint, connState)
+				return errors.Errorf("与 %d(%s) 的连接处于 %s 状态", stub.ID, stub.Endpoint, connState)
 			}
 			return nil
 		}
 
+		// 创建 ClusterClient 实例
 		clusterClient := orderer.NewClusterClient(conn)
 
+		// 初始化 workerCountReporter 实例
 		workerCountReporter := workerCountReporter{
 			channel: channel,
 		}
 
+		// 创建并初始化 RemoteContext 实例
 		rc := &RemoteContext{
-			expiresAt:                        cert.NotAfter,
-			minimumExpirationWarningInterval: c.MinimumExpirationWarningInterval,
-			certExpWarningThreshold:          c.CertExpWarningThreshold,
-			workerCountReporter:              workerCountReporter,
-			Channel:                          channel,
-			Metrics:                          c.Metrics,
-			SendBuffSize:                     c.SendBufferSize,
-			shutdownSignal:                   c.shutdownSignal,
-			endpoint:                         stub.Endpoint,
-			Logger:                           c.Logger,
-			ProbeConn:                        probeConnection,
-			conn:                             conn,
-			Client:                           clusterClient,
+			expiresAt:                        cert.NotAfter,                      // 证书过期时间
+			minimumExpirationWarningInterval: c.MinimumExpirationWarningInterval, // 最小过期警告间隔
+			certExpWarningThreshold:          c.CertExpWarningThreshold,          // 证书过期警告阈值
+			workerCountReporter:              workerCountReporter,                // 工作线程计数报告器
+			Channel:                          channel,                            // 频道名称
+			Metrics:                          c.Metrics,                          // 监控指标
+			SendBuffSize:                     c.SendBufferSize,                   // 发送缓冲区大小
+			shutdownSignal:                   c.shutdownSignal,                   // 关闭信号
+			endpoint:                         stub.Endpoint,                      // 远程节点端点
+			Logger:                           c.Logger,                           // 日志记录器
+			ProbeConn:                        probeConnection,                    // 探查连接状态的函数
+			conn:                             conn,                               // gRPC 连接
+			Client:                           clusterClient,                      // ClusterClient 实例
 		}
+		// 返回初始化完成的 RemoteContext 实例
 		return rc, nil
 	}
 }
@@ -422,23 +485,28 @@ func (stub *Stub) Deactivate() {
 	stub.RemoteContext = nil
 }
 
-// Activate creates a remote context with the given function callback
-// in an atomic manner - if two parallel invocations are invoked on this Stub,
-// only a single invocation of createRemoteStub takes place.
+// Activate 函数使用给定的回调函数 `createRemoteContext` 以原子方式创建远程上下文。
+// 如果在 Stub 上并行调用了两个激活请求，只会执行一次 `createRemoteContext` 的调用。
 func (stub *Stub) Activate(createRemoteContext func() (*RemoteContext, error)) error {
+	// 加锁以确保原子操作，防止多个 goroutine 并发修改 Stub 的状态。
 	stub.lock.Lock()
 	defer stub.lock.Unlock()
-	// Check if the stub has already been activated while we were waiting for the lock
+
+	// 检查在等待锁的过程中 Stub 是否已被激活。
 	if stub.isActive() {
-		return nil
+		return nil // 如果 Stub 已经激活，则直接返回无错误。
 	}
+
+	// 调用回调函数 `createRemoteContext` 来创建远程上下文。
 	remoteStub, err := createRemoteContext()
 	if err != nil {
+		// 如果创建远程上下文时出现错误，返回带有堆栈信息的错误。
 		return errors.WithStack(err)
 	}
 
+	// 将创建的远程上下文赋值给 Stub 的 RemoteContext 字段。
 	stub.RemoteContext = remoteStub
-	return nil
+	return nil // 成功创建远程上下文，返回无错误。
 }
 
 // RemoteContext interacts with remote cluster

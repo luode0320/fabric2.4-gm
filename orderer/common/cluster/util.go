@@ -58,39 +58,42 @@ func (cbc ConnByCertMap) Size() int {
 	return len(cbc)
 }
 
-// CertificateComparator returns whether some relation holds for two given certificates
+// CertificateComparator 是一个函数类型，用于比较两个给定的证书字节切片，
+// 并返回一个布尔值表示两者之间的某种关系是否成立。
 type CertificateComparator func([]byte, []byte) bool
 
-// MemberMapping defines NetworkMembers by their ID
-// and enables to lookup stubs by a certificate
+// MemberMapping 结构体定义了一个网络成员的映射，其中成员通过其ID进行标识，
+// 并且允许通过证书查找对应的 Stub（即远程节点的代理对象）。
+// 它还包含了一个用于比较证书公钥是否相同的 CertificateComparator 函数。
 type MemberMapping struct {
-	id2stub       map[uint64]*Stub
-	SamePublicKey CertificateComparator
+	id2stub       map[uint64]*Stub      // ID 到 Stub 的映射，用于快速查找特定ID的成员
+	SamePublicKey CertificateComparator // 用于比较两个证书的公钥是否相同，以确定证书的等价性
 }
 
-// Foreach applies the given function on all stubs in the mapping
+// Foreach 方法遍历 MemberMapping 中的所有 Stub，并将每个 Stub 的 ID 和 Stub 本身传递给给定的函数 f。
 func (mp *MemberMapping) Foreach(f func(id uint64, stub *Stub)) {
 	for id, stub := range mp.id2stub {
 		f(id, stub)
 	}
 }
 
-// Put inserts the given stub to the MemberMapping
+// Put 方法将给定的 Stub 插入到 MemberMapping 中，使用 Stub 的 ID 作为键。
 func (mp *MemberMapping) Put(stub *Stub) {
 	mp.id2stub[stub.ID] = stub
 }
 
-// Remove removes the stub with the given ID from the MemberMapping
+// Remove 方法从 MemberMapping 中移除具有给定 ID 的 Stub。
 func (mp *MemberMapping) Remove(ID uint64) {
 	delete(mp.id2stub, ID)
 }
 
-// ByID retrieves the Stub with the given ID from the MemberMapping
+// ByID 方法从 MemberMapping 中通过给定的 ID 检索 Stub。
 func (mp MemberMapping) ByID(ID uint64) *Stub {
 	return mp.id2stub[ID]
 }
 
-// LookupByClientCert retrieves a Stub with the given client certificate
+// LookupByClientCert 方法通过给定的客户端证书查找 MemberMapping 中的 Stub。
+// 如果找到了具有相同公钥的 Stub，则返回该 Stub；否则返回 nil。
 func (mp MemberMapping) LookupByClientCert(cert []byte) *Stub {
 	for _, stub := range mp.id2stub {
 		if mp.SamePublicKey(stub.ClientTLSCert, cert) {
@@ -100,8 +103,8 @@ func (mp MemberMapping) LookupByClientCert(cert []byte) *Stub {
 	return nil
 }
 
-// ServerCertificates returns a set of the server certificates
-// represented as strings
+// ServerCertificates 方法返回 MemberMapping 中所有成员的服务器证书集合，
+// 证书以字符串形式表示，用于后续的比较或处理。
 func (mp MemberMapping) ServerCertificates() StringSet {
 	res := make(StringSet)
 	for _, member := range mp.id2stub {
@@ -110,7 +113,7 @@ func (mp MemberMapping) ServerCertificates() StringSet {
 	return res
 }
 
-// StringSet is a set of strings
+// StringSet 是一组字符串
 type StringSet map[string]struct{}
 
 // union adds the elements of the given set to the StringSet
@@ -127,12 +130,11 @@ func (ss StringSet) subtract(set StringSet) {
 	}
 }
 
-// PredicateDialer creates gRPC connections
-// that are only established if the given predicate
-// is fulfilled
+// PredicateDialer 结构体用于创建gRPC连接，但这些连接的建立是受制于特定条件（predicate）的。
+// 当给定的条件判断函数返回true时，连接才会真正建立。
 type PredicateDialer struct {
-	lock   sync.RWMutex
-	Config comm.ClientConfig
+	lock   sync.RWMutex      // 读写锁，用于保护内部状态的安全访问，确保线程安全。
+	Config comm.ClientConfig // 客户端配置信息，包含了创建gRPC连接所需的各项配置，如地址、认证方式等。
 }
 
 func (dialer *PredicateDialer) UpdateRootCAs(serverRootCAs [][]byte) {
@@ -167,57 +169,80 @@ type StandardDialer struct {
 	Config comm.ClientConfig
 }
 
-// Dial dials an address according to the given EndpointCriteria
+// Dial 方法根据给定的 EndpointCriteria 拨打指定的地址。
+// 它会使用 StandardDialer 的配置副本，并将 EndpointCriteria 中的 TLSRootCAs 字段赋值给配置副本的 SecOpts.ServerRootCAs 字段，
+// 然后使用配置副本拨打 EndpointCriteria.Endpoint 指定的地址。
+// 参数：
+// endpointCriteria EndpointCriteria // 包含远程排序节点的网络地址和 TLS 根证书的端点标准或条件
+// 返回值：
+// *grpc.ClientConn, error // 返回一个指向 gRPC 客户端连接的指针，以及可能的错误
 func (dialer *StandardDialer) Dial(endpointCriteria EndpointCriteria) (*grpc.ClientConn, error) {
+	// 创建配置副本，确保不会修改原始配置
 	clientConfigCopy := dialer.Config
+	// 将 EndpointCriteria 中的 TLSRootCAs 字段赋值给配置副本的 SecOpts.ServerRootCAs 字段
 	clientConfigCopy.SecOpts.ServerRootCAs = endpointCriteria.TLSRootCAs
 
+	// 使用配置副本拨打指定的地址
 	return clientConfigCopy.Dial(endpointCriteria.Endpoint)
 }
 
 //go:generate mockery -dir . -name BlockVerifier -case underscore -output ./mocks/
 
-// BlockVerifier verifies block signatures.
+// BlockVerifier 接口定义了区块签名验证的行为规范。
+// 功能描述：
+// VerifyBlockSignature 方法用于验证一组区块签名数据（SignedData 列表）的正确性。
+// 可选参数为配置信封（ConfigEnvelope），如果提供，验证规则将基于此配置信封中的配置信息执行。
+// 如果未提供配置信封（即为 nil），则使用之前区块提交时所应用的验证规则进行签名验证。
 type BlockVerifier interface {
-	// VerifyBlockSignature verifies a signature of a block.
-	// It has an optional argument of a configuration envelope
-	// which would make the block verification to use validation rules
-	// based on the given configuration in the ConfigEnvelope.
-	// If the config envelope passed is nil, then the validation rules used
-	// are the ones that were applied at commit of previous blocks.
+	// VerifyBlockSignature 方法用于验证一组区块签名数据的正确性。
+	// 参数：
+	// sd []*protoutil.SignedData // 包含签名者身份、签名数据和签名的签名数据集合
+	// config *common.ConfigEnvelope // 可选配置信封，包含用于验证的配置信息
+	// 返回值：
+	// error // 如果签名验证失败，返回错误；否则，返回 nil 表示签名验证成功
 	VerifyBlockSignature(sd []*protoutil.SignedData, config *common.ConfigEnvelope) error
 }
 
-// BlockSequenceVerifier verifies that the given consecutive sequence
-// of blocks is valid.
+// BlockSequenceVerifier 验证给定的连续块序列是否有效。
 type BlockSequenceVerifier func(blocks []*common.Block, channel string) error
 
-// Dialer creates a gRPC connection to a remote address
+// Dialer 创建到远程地址的gRPC连接
 type Dialer interface {
 	Dial(endpointCriteria EndpointCriteria) (*grpc.ClientConn, error)
 }
 
-// VerifyBlocks verifies the given consecutive sequence of blocks is valid,
-// and returns nil if it's valid, else an error.
+// VerifyBlocks 方法用于验证给定的一系列连续区块的合法性。
+// 参数：
+// blockBuff []*common.Block // 需要验证的区块序列
+// signatureVerifier BlockVerifier // 用于验证区块签名的接口实现
+// 功能描述：
+// 验证区块序列的非空性。
+// 验证每个区块的哈希值与其头部的哈希值相匹配，并且是前一个区块的后继哈希值。
+// 验证所有配置区块，使用提交的配置或在迭代区块批处理过程中捕获的配置。
+// 如果最后一个区块是配置区块，它已经在先前的验证中被确认，直接返回无误。
+// 否则，验证最后一个区块的签名。
 func VerifyBlocks(blockBuff []*common.Block, signatureVerifier BlockVerifier) error {
+	// 如果区块序列为空，返回错误
 	if len(blockBuff) == 0 {
-		return errors.New("buffer is empty")
+		return errors.New("缓冲区为空")
 	}
-	// First, we verify that the block hash in every block is:
-	// Equal to the hash in the header
-	// Equal to the previous hash in the succeeding block
+
+	// 第一步：验证每个区块的内部哈希一致性
+	// 确保区块的哈希值等于头部的哈希值，且等于后继区块的前一个哈希值
 	for i := range blockBuff {
 		if err := VerifyBlockHash(i, blockBuff); err != nil {
 			return err
 		}
 	}
 
+	// 初始化配置变量和标记，用于跟踪是否最后一个区块是配置区块
 	var config *common.ConfigEnvelope
 	var isLastBlockConfigBlock bool
-	// Verify all configuration blocks that are found inside the block batch,
-	// with the configuration that was committed (nil) or with one that is picked up
-	// during iteration over the block batch.
+
+	// 第二步：验证所有配置区块
+	// 使用已提交的配置或在迭代区块批处理过程中找到的配置
 	for _, block := range blockBuff {
+		// 方法用于从给定的区块中解析配置信封（ConfigEnvelope），如果存在的话。
 		configFromBlock, err := ConfigFromBlock(block)
 		if err == errNotAConfig {
 			isLastBlockConfigBlock = false
@@ -226,7 +251,7 @@ func VerifyBlocks(blockBuff []*common.Block, signatureVerifier BlockVerifier) er
 		if err != nil {
 			return err
 		}
-		// The block is a configuration block, so verify it
+		// 如果区块是配置区块，则验证它
 		if err := VerifyBlockSignature(block, signatureVerifier, config); err != nil {
 			return err
 		}
@@ -234,43 +259,61 @@ func VerifyBlocks(blockBuff []*common.Block, signatureVerifier BlockVerifier) er
 		isLastBlockConfigBlock = true
 	}
 
-	// Verify the last block's signature
+	// 第三步：验证最后一个区块的签名
 	lastBlock := blockBuff[len(blockBuff)-1]
 
-	// If last block is a config block, we verified it using the policy of the previous block, so it's valid.
+	// 如果最后一个区块是配置区块，它已在先前的验证中被确认，直接返回无误
 	if isLastBlockConfigBlock {
 		return nil
 	}
 
+	// 否则，验证最后一个区块的签名
 	return VerifyBlockSignature(lastBlock, signatureVerifier, config)
 }
 
-var errNotAConfig = errors.New("not a config block")
+var errNotAConfig = errors.New("不是配置块")
 
-// ConfigFromBlock returns a ConfigEnvelope if exists, or a *NotAConfigBlock error.
-// It may also return some other error in case parsing failed.
+// ConfigFromBlock 方法用于从给定的区块中解析配置信封（ConfigEnvelope），如果存在的话。
+// 参数：
+// block *common.Block // 需要解析的区块
+// 功能描述：
+// 检查区块是否为空或无效。
+// 解析区块中的第一个交易数据为信封。
+// 解析信封的负载。
+// 如果区块序号为0，直接解析负载数据为配置信封。
+// 如果区块序号大于0，检查负载头部的类型是否为 CONFIG 类型。
+// 解析配置信封并返回。
 func ConfigFromBlock(block *common.Block) (*common.ConfigEnvelope, error) {
+	// 检查区块是否为空或无效
 	if block == nil || block.Data == nil || len(block.Data.Data) == 0 {
-		return nil, errors.New("empty block")
+		return nil, errors.New("空块")
 	}
+
+	// 解析区块中的第一个交易数据为信封
 	txn := block.Data.Data[0]
 	env, err := protoutil.GetEnvelopeFromBlock(txn)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+
+	// 解析信封的负载
 	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+
+	// 如果区块序号为0，直接解析负载数据为配置信封
 	if block.Header.Number == 0 {
 		configEnvelope, err := configtx.UnmarshalConfigEnvelope(payload.Data)
 		if err != nil {
-			return nil, errors.Wrap(err, "invalid config envelope")
+			return nil, errors.Wrap(err, "无效的配置信封")
 		}
 		return configEnvelope, nil
 	}
+
+	// 如果区块序号大于0，检查负载头部的类型是否为 CONFIG 类型
 	if payload.Header == nil {
-		return nil, errors.New("nil header in payload")
+		return nil, errors.New("有效负载中的nil标头")
 	}
 	chdr, err := protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 	if err != nil {
@@ -279,95 +322,157 @@ func ConfigFromBlock(block *common.Block) (*common.ConfigEnvelope, error) {
 	if common.HeaderType(chdr.Type) != common.HeaderType_CONFIG {
 		return nil, errNotAConfig
 	}
+
+	// 解析配置信封并返回
 	configEnvelope, err := configtx.UnmarshalConfigEnvelope(payload.Data)
 	if err != nil {
-		return nil, errors.Wrap(err, "invalid config envelope")
+		return nil, errors.Wrap(err, "无效的配置信封")
 	}
 	return configEnvelope, nil
 }
 
-// VerifyBlockHash verifies the hash chain of the block with the given index
-// among the blocks of the given block buffer.
+// VerifyBlockHash 方法用于验证区块缓冲区中特定索引位置的区块的哈希链。
+// 参数：
+// indexInBuffer int // 区块在缓冲区中的索引位置
+// blockBuff []*common.Block // 区块缓冲区
+// 功能描述：
+// 检查区块索引是否超出缓冲区范围。
+// 检查区块头部是否存在。
+// 验证区块数据哈希与头部声明的哈希一致。
+// 若当前区块非首个区块，验证当前区块的前一个区块哈希与实际前一个区块的哈希一致。
 func VerifyBlockHash(indexInBuffer int, blockBuff []*common.Block) error {
+	// 检查区块索引是否超出缓冲区范围
 	if len(blockBuff) <= indexInBuffer {
-		return errors.Errorf("index %d out of bounds (total %d blocks)", indexInBuffer, len(blockBuff))
+		return errors.Errorf("索引 %d 超出界限 (总计 %d块)", indexInBuffer, len(blockBuff))
 	}
+
+	// 获取待验证的区块
 	block := blockBuff[indexInBuffer]
+
+	// 检查区块头部是否存在
 	if block.Header == nil {
-		return errors.New("missing block header")
+		return errors.New("缺少块标头")
 	}
+
+	// 获取区块序列号
 	seq := block.Header.Number
+
+	// 计算区块数据哈希
 	dataHash := protoutil.BlockDataHash(block.Data)
-	// Verify data hash matches the hash in the header
+
+	// 验证区块数据哈希与头部声明的哈希一致
 	if !bytes.Equal(dataHash, block.Header.DataHash) {
 		computedHash := hex.EncodeToString(dataHash)
 		claimedHash := hex.EncodeToString(block.Header.DataHash)
-		return errors.Errorf("computed hash of block (%d) (%s) doesn't match claimed hash (%s)",
+		return errors.Errorf("块的计算哈希 (%d) (%s) 与声明的哈希值不匹配(%s)",
 			seq, computedHash, claimedHash)
 	}
-	// We have a previous block in the buffer, ensure current block's previous hash matches the previous one.
+
+	// 若当前区块非首个区块，验证当前区块的前一个区块哈希与实际前一个区块的哈希一致
 	if indexInBuffer > 0 {
+		// 获取前一个区块
 		prevBlock := blockBuff[indexInBuffer-1]
-		currSeq := block.Header.Number
+
+		// 检查前一个区块头部是否存在
 		if prevBlock.Header == nil {
-			return errors.New("previous block header is nil")
+			return errors.New("上一个块标头为零")
 		}
+
+		// 获取前一个区块序列号
 		prevSeq := prevBlock.Header.Number
-		if prevSeq+1 != currSeq {
-			return errors.Errorf("sequences %d and %d were received consecutively", prevSeq, currSeq)
+
+		// 验证当前区块序列号是否为前一个区块序列号的下一序号
+		if prevSeq+1 != seq {
+			return errors.Errorf("序列 %d 和 %d 不连续", prevSeq, seq)
 		}
+
+		// 验证当前区块的前一个区块哈希与实际前一个区块的哈希一致
 		if !bytes.Equal(block.Header.PreviousHash, protoutil.BlockHeaderHash(prevBlock.Header)) {
 			claimedPrevHash := hex.EncodeToString(block.Header.PreviousHash)
 			actualPrevHash := hex.EncodeToString(protoutil.BlockHeaderHash(prevBlock.Header))
-			return errors.Errorf("block [%d]'s hash (%s) mismatches block [%d]'s prev block hash (%s)",
-				prevSeq, actualPrevHash, currSeq, claimedPrevHash)
+			return errors.Errorf("块 [%d] 的哈希 (%s) 不匹配块 [%d] 的前一个块哈希 (%s)",
+				prevSeq, actualPrevHash, seq, claimedPrevHash)
 		}
 	}
+
+	// 如果所有验证均通过，返回无误
 	return nil
 }
 
-// SignatureSetFromBlock creates a signature set out of a block.
+// SignatureSetFromBlock 方法用于从给定的区块中创建一个签名集，该签名集包含了区块的多个签名及其元数据。
+// 参数：
+// block *common.Block // 需要创建签名集的区块
+// 功能描述：
+// 检查区块的元数据是否存在，以及元数据是否包含足够的条目。
+// 解析区块中与签名相关的元数据。
+// 遍历元数据中的签名信息，反序列化签名头，并创建签名集中的每个 SignedData 对象，其中包含了签名者的身份信息、签名数据（由元数据值、签名头和区块头部组成的字节串）以及签名本身。
+// 返回创建好的签名集。
 func SignatureSetFromBlock(block *common.Block) ([]*protoutil.SignedData, error) {
+	// 检查区块的元数据是否存在，以及元数据是否包含足够的条目
 	if block.Metadata == nil || len(block.Metadata.Metadata) <= int(common.BlockMetadataIndex_SIGNATURES) {
-		return nil, errors.New("no metadata in block")
-	}
-	metadata, err := protoutil.GetMetadataFromBlock(block, common.BlockMetadataIndex_SIGNATURES)
-	if err != nil {
-		return nil, errors.Errorf("failed unmarshalling medatata for signatures: %v", err)
+		return nil, errors.New("块中没有元数据")
 	}
 
+	// 解析区块中与签名相关的元数据
+	metadata, err := protoutil.GetMetadataFromBlock(block, common.BlockMetadataIndex_SIGNATURES)
+	if err != nil {
+		return nil, errors.Errorf("对签名的元数据进行取消编组失败: %v", err)
+	}
+
+	// 创建签名集
 	var signatureSet []*protoutil.SignedData
+
+	// 遍历元数据中的签名信息
 	for _, metadataSignature := range metadata.Signatures {
+		// 反序列化签名头
 		sigHdr, err := protoutil.UnmarshalSignatureHeader(metadataSignature.SignatureHeader)
 		if err != nil {
-			return nil, errors.Errorf("failed unmarshalling signature header for block with id %d: %v",
+			return nil, errors.Errorf("无法对id为的块的签名标头进行编组 %d: %v",
 				block.Header.Number, err)
 		}
+
+		// 创建签名集中的每个 SignedData 对象
 		signatureSet = append(signatureSet,
 			&protoutil.SignedData{
-				Identity: sigHdr.Creator,
-				Data: util.ConcatenateBytes(metadata.Value,
-					metadataSignature.SignatureHeader, protoutil.BlockHeaderBytes(block.Header)),
-				Signature: metadataSignature.Signature,
+				Identity: sigHdr.Creator, // 签名者的身份信息
+				Data: util.ConcatenateBytes(
+					metadata.Value,                            // 签名数据的一部分
+					metadataSignature.SignatureHeader,         // 签名数据的一部分
+					protoutil.BlockHeaderBytes(block.Header)), // 签名数据的一部分
+				Signature: metadataSignature.Signature, // 签名本身
 			},
 		)
 	}
+
+	// 返回创建好的签名集
 	return signatureSet, nil
 }
 
-// VerifyBlockSignature verifies the signature on the block with the given BlockVerifier and the given config.
+// VerifyBlockSignature 方法用于验证给定区块的签名，确保区块的完整性和来源的可靠性。
+// 参数：
+// block *common.Block // 需要验证签名的区块
+// verifier BlockVerifier // 用于验证区块签名的接口实现
+// config *common.ConfigEnvelope // 包含验证签名所需配置信息的配置信封
+// 功能描述：
+// 从给定区块中提取签名集。
+// 使用提供的 BlockVerifier 接口实现来验证签名集的正确性，基于配置信封中的信息。
 func VerifyBlockSignature(block *common.Block, verifier BlockVerifier, config *common.ConfigEnvelope) error {
+	// 从给定区块中提取签名集
 	signatureSet, err := SignatureSetFromBlock(block)
 	if err != nil {
 		return err
 	}
+
+	// 使用提供的 BlockVerifier 接口实现来验证签名集的正确性
 	return verifier.VerifyBlockSignature(signatureSet, config)
 }
 
-// EndpointCriteria defines criteria of how to connect to a remote orderer node.
+// EndpointCriteria 定义了如何连接到远程排序节点的标准或条件。
 type EndpointCriteria struct {
-	Endpoint   string   // Endpoint of the form host:port
-	TLSRootCAs [][]byte // PEM encoded TLS root CA certificates
+	// 远程排序节点的网络地址，格式为 host:port
+	Endpoint string
+	// TLS 根证书，PEM 编码格式的字节切片，用于验证远程节点的身份
+	TLSRootCAs [][]byte
 }
 
 // String returns a string representation of this EndpointCriteria
@@ -411,41 +516,58 @@ func (ep EndpointCriteria) String() string {
 	return string(rawJSON)
 }
 
-// EndpointconfigFromConfigBlock retrieves TLS CA certificates and endpoints
-// from a config block.
+// EndpointconfigFromConfigBlock 函数从配置区块中提取 TLS CA 证书和端点信息。
+// 参数:
+// block *common.Block       // 区块，包含配置信息
+// bccsp bccsp.BCCSP         // 加密服务提供者，用于处理加密和解密操作
+//
+// 返回值:
+// []EndpointCriteria        // 端点配置信息列表
+// error                     // 错误信息，如果出现任何问题则返回非空错误
 func EndpointconfigFromConfigBlock(block *common.Block, bccsp bccsp.BCCSP) ([]EndpointCriteria, error) {
+	// 检查输入的区块是否为 nil
 	if block == nil {
-		return nil, errors.New("nil block")
+		return nil, errors.New("块为空") // 如果区块为 nil，返回错误
 	}
+
+	// 从区块中提取配置信封
 	envelopeConfig, err := protoutil.ExtractEnvelope(block, 0)
 	if err != nil {
-		return nil, err
+		return nil, err // 如果提取失败，返回错误
 	}
 
+	// 从配置信封中创建配置束
 	bundle, err := channelconfig.NewBundleFromEnvelope(envelopeConfig, bccsp)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed extracting bundle from envelope")
+		return nil, errors.Wrap(err, "从信封中提取包失败") // 如果创建失败，返回错误
 	}
+
+	// 从配置束中获取 MSP 管理器中的所有 MSP 实例
 	msps, err := bundle.MSPManager().GetMSPs()
 	if err != nil {
-		return nil, errors.Wrap(err, "failed obtaining MSPs from MSPManager")
+		return nil, errors.Wrap(err, "从MSPManager获取MSPs失败") // 如果获取失败，返回错误
 	}
+
+	// 从配置束中获取排序服务配置
 	ordererConfig, ok := bundle.OrdererConfig()
 	if !ok {
-		return nil, errors.New("failed obtaining orderer config from bundle")
+		return nil, errors.New("从包中获取orderer配置失败") // 如果获取失败，返回错误
 	}
 
+	// 构建一个映射，将每个组织的 MSPID 映射到其 TLS CA 证书
 	mspIDsToCACerts := make(map[string][][]byte)
-	var aggregatedTLSCerts [][]byte
+	var aggregatedTLSCerts [][]byte // 聚合所有 TLS CA 证书
+
+	// 遍历排序服务配置中的所有组织
 	for _, org := range ordererConfig.Organizations() {
-		// Validate that every orderer org has a corresponding MSP instance in the MSP Manager.
+		// 验证每个排序服务组织都有一个对应的 MSP 实例在 MSP 管理器中
 		msp, exists := msps[org.MSPID()]
 		if !exists {
-			return nil, errors.Errorf("no MSP found for MSP with ID of %s", org.MSPID())
+			return nil, errors.Errorf("未找到ID为的MSP %s", org.MSPID()) // 如果找不到对应的 MSP，返回错误
 		}
 
-		// Build a per org mapping of the TLS CA certs for this org,
-		// and aggregate all TLS CA certs into aggregatedTLSCerts to be used later on.
+		// 构建一个按组织划分的 TLS CA 证书映射，
+		// 并将所有 TLS CA 证书聚合到 aggregatedTLSCerts 中以供后续使用
 		var caCerts [][]byte
 		caCerts = append(caCerts, msp.GetTLSIntermediateCerts()...)
 		caCerts = append(caCerts, msp.GetTLSRootCerts()...)
@@ -453,37 +575,56 @@ func EndpointconfigFromConfigBlock(block *common.Block, bccsp bccsp.BCCSP) ([]En
 		aggregatedTLSCerts = append(aggregatedTLSCerts, caCerts...)
 	}
 
+	// 从排序服务配置中提取每个组织的端点信息，使用之前构建的 TLS CA 证书映射
 	endpointsPerOrg := perOrgEndpoints(ordererConfig, mspIDsToCACerts)
 	if len(endpointsPerOrg) > 0 {
-		return endpointsPerOrg, nil
+		return endpointsPerOrg, nil // 如果每个组织的端点信息存在，直接返回
 	}
 
+	// 如果每个组织的端点信息不存在，从配置中提取全局端点信息，使用聚合的 TLS CA 证书
 	return globalEndpointsFromConfig(aggregatedTLSCerts, bundle), nil
 }
 
+// perOrgEndpoints 函数接收一个排序服务的配置对象和一个映射，该映射关联组织标识符 (MSPID) 到对应的 TLS 根证书。
+// 函数的目的是为了每个组织的每一个端点创建并返回一系列的 EndpointCriteria 对象数组，
+// 这些对象包含了访问排序服务所需的 TLS 根证书和具体的端点 URL。
 func perOrgEndpoints(ordererConfig channelconfig.Orderer, mspIDsToCerts map[string][][]byte) []EndpointCriteria {
 	var endpointsPerOrg []EndpointCriteria
 
+	// 遍历排序服务配置中的所有组织信息
 	for _, org := range ordererConfig.Organizations() {
+		// 对于每个组织，遍历其所有的端点信息
 		for _, endpoint := range org.Endpoints() {
+			// 使用组织的 MSPID 在 mspIDsToCerts 映射中查找对应的 TLS 根证书
+			// 创建一个 EndpointCriteria 对象，其中包含 TLS 根证书和端点 URL
 			endpointsPerOrg = append(endpointsPerOrg, EndpointCriteria{
-				TLSRootCAs: mspIDsToCerts[org.MSPID()],
-				Endpoint:   endpoint,
+				TLSRootCAs: mspIDsToCerts[org.MSPID()], // TLS 根证书
+				Endpoint:   endpoint,                   // 具体的端点 URL
 			})
 		}
 	}
 
+	// 返回包含所有 EndpointCriteria 对象的数组
 	return endpointsPerOrg
 }
 
+// globalEndpointsFromConfig 函数接收聚合的 TLS 根证书和一个通道配置束（bundle）。
+// 它的目的是创建并返回一个 EndpointCriteria 对象数组，
+// 这些对象包含了全局排序服务的端点 URL 和用于 TLS 验证的根证书，
+// 使得客户端可以安全地与这些全局排序服务进行通信。
 func globalEndpointsFromConfig(aggregatedTLSCerts [][]byte, bundle *channelconfig.Bundle) []EndpointCriteria {
 	var globalEndpoints []EndpointCriteria
+
+	// 遍历通道配置束中的所有排序服务地址
 	for _, endpoint := range bundle.ChannelConfig().OrdererAddresses() {
+		// 对于每个地址，创建一个 EndpointCriteria 对象，包含地址和聚合的 TLS 根证书
 		globalEndpoints = append(globalEndpoints, EndpointCriteria{
-			Endpoint:   endpoint,
-			TLSRootCAs: aggregatedTLSCerts,
+			Endpoint:   endpoint,           // 排序服务的端点 URL
+			TLSRootCAs: aggregatedTLSCerts, // 聚合的 TLS 根证书
 		})
 	}
+
+	// 返回包含所有 EndpointCriteria 对象的数组
 	return globalEndpoints
 }
 
@@ -637,29 +778,44 @@ func (bv *BlockValidationPolicyVerifier) VerifyBlockSignature(sd []*protoutil.Si
 
 //go:generate mockery -dir . -name BlockRetriever -case underscore -output ./mocks/
 
-// BlockRetriever retrieves blocks
+// BlockRetriever 检索块
 type BlockRetriever interface {
-	// Block returns a block with the given number,
-	// or nil if such a block doesn't exist.
+	// Block返回一个具有给定数字的块，
+	// 如果这样的块不存在，则为nil。
 	Block(number uint64) *common.Block
 }
 
-// LastConfigBlock returns the last config block relative to the given block.
+// LastConfigBlock 函数返回相对于给定区块的最后一个配置区块。
+// 参数:
+// block *common.Block          // 当前区块，从其中解析出最后一次配置变更的索引
+// blockRetriever BlockRetriever // 区块检索器，用于根据区块序号获取区块实例
+//
+// 返回值:
+// *common.Block                // 最后一个配置区块
+// error                        // 错误信息，如果出现任何问题则返回非空错误
 func LastConfigBlock(block *common.Block, blockRetriever BlockRetriever) (*common.Block, error) {
+	// 检查输入参数是否为 nil
 	if block == nil {
-		return nil, errors.New("nil block")
+		return nil, errors.New("块为空") // 如果 block 为 nil，返回错误
 	}
 	if blockRetriever == nil {
-		return nil, errors.New("nil blockRetriever")
+		return nil, errors.New("块检索器为空") // 如果 blockRetriever 为 nil，返回错误
 	}
+
+	// 从当前区块中解析出最后一次配置变更的索引
 	lastConfigBlockNum, err := protoutil.GetLastConfigIndexFromBlock(block)
 	if err != nil {
-		return nil, err
+		return nil, err // 如果解析失败，返回错误
 	}
+
+	// 使用区块检索器根据最后一次配置变更的索引获取区块实例
 	lastConfigBlock := blockRetriever.Block(lastConfigBlockNum)
 	if lastConfigBlock == nil {
+		// 如果未能成功获取区块，返回错误
 		return nil, errors.Errorf("unable to retrieve last config block [%d]", lastConfigBlockNum)
 	}
+
+	// 成功获取到最后一个配置区块，返回该区块
 	return lastConfigBlock, nil
 }
 

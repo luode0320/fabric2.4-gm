@@ -44,21 +44,42 @@ const (
 	EndpointsKey = "Endpoints"
 )
 
-// OrdererProtos is used as the source of the OrdererConfig.
+// OrdererProtos 结构体用作排序服务配置 `OrdererConfig` 的源数据，它包含了排序服务的核心配置信息。
 type OrdererProtos struct {
-	ConsensusType       *ab.ConsensusType
-	BatchSize           *ab.BatchSize
-	BatchTimeout        *ab.BatchTimeout
-	KafkaBrokers        *ab.KafkaBrokers
+	// ConsensusType 字段表示共识算法的类型，定义了排序服务使用的共识机制。
+	// 这个字段决定了网络中区块的生成和验证方式，常见的共识类型包括 Kafka、Raft、Solo 等。
+	ConsensusType *ab.ConsensusType
+
+	// BatchSize 字段定义了批处理大小，即每次打包交易形成新区块时包含的交易数量上限。
+	// 这个字段对性能和资源使用有直接影响，较大的批处理大小可以提高吞吐量，但可能增加内存使用和区块传播延迟。
+	BatchSize *ab.BatchSize
+
+	// BatchTimeout 字段表示批处理超时时间，定义了排序服务在没有收到新的交易请求时等待的最长时间。
+	// 如果在这个时间内没有新的交易请求，排序服务会强制打包当前收集的交易形成新区块。
+	BatchTimeout *ab.BatchTimeout
+
+	// KafkaBrokers 字段仅在使用 Kafka 作为共识机制时有效，它包含了 Kafka Broker 的地址列表。
+	// 这个字段对于 Kafka 作为共识机制的排序服务来说是必需的，用于连接到 Kafka 集群进行消息传递。
+	KafkaBrokers *ab.KafkaBrokers
+
+	// ChannelRestrictions 字段表示通道限制，定义了排序服务对通道的一些限制性配置。
+	// 这些限制可能包括通道的最大数量、最大区块大小等，用于控制网络资源的合理分配和使用。
 	ChannelRestrictions *ab.ChannelRestrictions
-	Capabilities        *cb.Capabilities
+
+	// Capabilities 字段表示排序服务支持的功能集，定义了排序服务具备的高级功能。
+	// 这些功能可能包括事务原子性、隐私保护、智能合约支持等，用于区分不同版本和功能级别的排序服务。
+	Capabilities *cb.Capabilities
 }
 
-// OrdererConfig holds the orderer configuration information.
+// OrdererConfig 结构体用于保存排序服务的配置信息。
 type OrdererConfig struct {
+	// protos 字段保存了排序服务的原生配置信息，通常包含了更详细的配置参数。
 	protos *OrdererProtos
-	orgs   map[string]OrdererOrg
 
+	// orgs 字段是一个映射，用于保存与排序服务相关的组织信息，键为组织名称，值为OrdererOrg结构体。
+	orgs map[string]OrdererOrg
+
+	// batchTimeout 字段表示批处理超时时间，即排序服务在收集交易请求形成新区块时的等待时间。
 	batchTimeout time.Duration
 }
 

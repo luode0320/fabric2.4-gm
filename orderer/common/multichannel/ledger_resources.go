@@ -117,7 +117,7 @@ func (lr *ledgerResources) VerifyBlockSignature(sd []*protoutil.SignedData, enve
 	return nil
 }
 
-// Block returns a block with the following number, or nil if such a block doesn't exist.
+// Block 返回具有以下数字的块，如果这样的块不存在，则返回nil。
 func (lr *ledgerResources) Block(number uint64) *common.Block {
 	if lr.Height() <= number {
 		return nil

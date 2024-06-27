@@ -15,14 +15,15 @@ import (
 
 var mspLogger = flogging.MustGetLogger("msp")
 
+// mspManagerImpl 结构体实现了MSPManager接口，用于管理一系列MSP实例。
 type mspManagerImpl struct {
-	// map that contains all MSPs that we have setup or otherwise added
+	// mspsMap 存储所有已经设置或添加的MSP实例，键为MSPID。
 	mspsMap map[string]MSP
 
-	// map that maps MSPs by their provider types
+	// mspsByProviders 按照MSP的提供者类型对MSP实例进行分类存储。
 	mspsByProviders map[ProviderType][]MSP
 
-	// error that might have occurred at startup
+	// up 标记表示MSPManager实例是否已成功初始化。
 	up bool
 }
 
@@ -66,7 +67,7 @@ func (mgr *mspManagerImpl) Setup(msps []MSP) error {
 	return nil
 }
 
-// GetMSPs returns the MSPs that are managed by this manager
+// GetMSPs 返回此管理器管理的msp
 func (mgr *mspManagerImpl) GetMSPs() (map[string]MSP, error) {
 	return mgr.mspsMap, nil
 }
