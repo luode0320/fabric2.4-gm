@@ -88,16 +88,20 @@ func UnmarshalConfigEnvelopeOrPanic(data []byte) *cb.ConfigEnvelope {
 	return result
 }
 
-// UnmarshalConfigUpdateFromPayload unmarshals configuration update from given payload
+// UnmarshalConfigUpdateFromPayload 函数从给定的有效载荷中解析配置更新。
 func UnmarshalConfigUpdateFromPayload(payload *cb.Payload) (*cb.ConfigUpdate, error) {
+	// 从有效载荷数据中解析配置信封
 	configEnv, err := UnmarshalConfigEnvelope(payload.Data)
 	if err != nil {
 		return nil, err
 	}
+
+	// 从配置信封的最后更新中提取配置更新
 	configUpdateEnv, err := protoutil.EnvelopeToConfigUpdate(configEnv.LastUpdate)
 	if err != nil {
 		return nil, err
 	}
 
+	// 解析配置更新
 	return UnmarshalConfigUpdate(configUpdateEnv.ConfigUpdate)
 }

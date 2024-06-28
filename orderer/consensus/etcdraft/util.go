@@ -32,14 +32,18 @@ import (
 	"go.etcd.io/etcd/raft/raftpb"
 )
 
-// RaftPeers maps consenters to slice of raft.Peer
-func RaftPeers(consenterIDs []uint64) []raft.Peer {
-	var peers []raft.Peer
+// RaftNodes 将共识者ID映射为raft.Peer切片(这个不是peer节点, 这里的peer代表节点的意思, 实际上是排序节点)
+func RaftNodes(consenterIDs []uint64) []raft.Peer {
+	var orderers []raft.Peer // 初始化一个空的raft.Peer切片用于存放Peer对象
 
+	// 遍历所有共识者ID
 	for _, raftID := range consenterIDs {
-		peers = append(peers, raft.Peer{ID: raftID})
+		// 为每个共识者ID创建一个新的raft.Peer实例并将其追加到peers切片中
+		orderers = append(orderers, raft.Peer{ID: raftID})
 	}
-	return peers
+
+	// 返回包含所有raft.Peer实例的切片
+	return orderers
 }
 
 type ConsentersMap map[string]struct{}
@@ -49,12 +53,15 @@ func (c ConsentersMap) Exists(consenter *etcdraft.Consenter) bool {
 	return exists
 }
 
-// ConsentersToMap maps consenters into set where key is client TLS certificate
+// ConsentersToMap 函数将共识者映射为以客户端 TLS 证书为键的集合。
 func ConsentersToMap(consenters []*etcdraft.Consenter) ConsentersMap {
 	set := map[string]struct{}{}
+
+	// 遍历共识者列表，将客户端 TLS 证书作为键存入集合中
 	for _, c := range consenters {
 		set[string(c.ClientTlsCert)] = struct{}{}
 	}
+
 	return set
 }
 
@@ -88,24 +95,28 @@ func MetadataHasDuplication(md *etcdraft.ConfigMetadata) error {
 	return nil
 }
 
-// MetadataFromConfigValue reads and translates configuration updates from config value into raft metadata
+// MetadataFromConfigValue 函数从配置值中读取并将配置更新转换为 Raft 元数据。
 func MetadataFromConfigValue(configValue *common.ConfigValue) (*etcdraft.ConfigMetadata, error) {
+	// 解码共识类型配置更新
 	consensusTypeValue := &orderer.ConsensusType{}
 	if err := proto.Unmarshal(configValue.Value, consensusTypeValue); err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal consensusType config update")
+		return nil, errors.Wrap(err, "无法解码共识类型配置更新")
 	}
 
+	// 解码更新后的 Raft 元数据配置
 	updatedMetadata := &etcdraft.ConfigMetadata{}
 	if err := proto.Unmarshal(consensusTypeValue.Metadata, updatedMetadata); err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal updated (new) etcdraft metadata configuration")
+		return nil, errors.Wrap(err, "无法解码更新后的 etcdraft 元数据配置")
 	}
 
 	return updatedMetadata, nil
 }
 
-// MetadataFromConfigUpdate extracts consensus metadata from config update
+// MetadataFromConfigUpdate 函数从配置更新中提取共识元数据。
 func MetadataFromConfigUpdate(update *common.ConfigUpdate) (*etcdraft.ConfigMetadata, error) {
 	var baseVersion uint64
+
+	// 从读集中提取基础版本号
 	if update.ReadSet != nil && update.ReadSet.Groups != nil {
 		if ordererConfigGroup, ok := update.ReadSet.Groups["Orderer"]; ok {
 			if val, ok := ordererConfigGroup.Values["ConsensusType"]; ok {
@@ -114,32 +125,33 @@ func MetadataFromConfigUpdate(update *common.ConfigUpdate) (*etcdraft.ConfigMeta
 		}
 	}
 
+	// 检查写集中是否有更新共识类型的操作
 	if update.WriteSet != nil && update.WriteSet.Groups != nil {
 		if ordererConfigGroup, ok := update.WriteSet.Groups["Orderer"]; ok {
 			if val, ok := ordererConfigGroup.Values["ConsensusType"]; ok {
 				if baseVersion == val.Version {
-					// Only if the version in the write set differs from the read-set
-					// should we consider this to be an update to the consensus type
+					// 只有在写集中的版本与读集中的版本不同的情况下，才认为这是对共识类型的更新
 					return nil, nil
 				}
 				return MetadataFromConfigValue(val)
 			}
 		}
 	}
+
 	return nil, nil
 }
 
-// ConfigChannelHeader expects a config block and returns the header type
-// of the config envelope wrapped in it, e.g. HeaderType_ORDERER_TRANSACTION
+// ConfigChannelHeader 一个配置区块，并返回其中包含的配置信封的头类型，
+// 例如 HeaderType_ORDERER_TRANSACTION
 func ConfigChannelHeader(block *common.Block) (hdr *common.ChannelHeader, err error) {
 	envelope, err := protoutil.ExtractEnvelope(block, 0)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to extract envelope from the block")
+		return nil, errors.Wrap(err, "无法从区块中提取信封")
 	}
 
 	channelHeader, err := protoutil.ChannelHeader(envelope)
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot extract channel header")
+		return nil, errors.Wrap(err, "无法提取通道头")
 	}
 
 	return channelHeader, nil
@@ -471,32 +483,35 @@ func NodeExists(id uint64, nodes []uint64) bool {
 	return false
 }
 
-// ConfChange computes Raft configuration changes based on current Raft
-// configuration state and consenters IDs stored in RaftMetadata.
+// ConfChange 根据当前的Raft配置状态（confState）和存储在RaftMetadata中的ConsenterIds计算Raft配置变更。
 func ConfChange(blockMetadata *etcdraft.BlockMetadata, confState *raftpb.ConfState) *raftpb.ConfChange {
+	// 初始化一个Raft配置变更对象
 	raftConfChange := &raftpb.ConfChange{}
 
-	// need to compute conf changes to propose
+	// 需要计算需要提出的配置变更
 	if len(confState.Nodes) < len(blockMetadata.ConsenterIds) {
-		// adding new node
+		// 如果Raft配置中的节点数量少于区块元数据中的ConsenterIds数量，说明需要添加新节点
 		raftConfChange.Type = raftpb.ConfChangeAddNode
+		// 遍历区块元数据中的ConsenterIds，查找尚未存在于当前Raft配置中的节点ID
 		for _, consenterID := range blockMetadata.ConsenterIds {
 			if NodeExists(consenterID, confState.Nodes) {
-				continue
+				continue // 如果节点已存在，则跳过
 			}
-			raftConfChange.NodeID = consenterID
+			raftConfChange.NodeID = consenterID // 找到需添加的节点ID
 		}
 	} else {
-		// removing node
+		// 如果Raft配置中的节点数量多于或等于区块元数据中的ConsenterIds数量，说明需要移除节点
 		raftConfChange.Type = raftpb.ConfChangeRemoveNode
+		// 遍历当前Raft配置中的节点ID，查找不在区块元数据ConsenterIds中的节点
 		for _, nodeID := range confState.Nodes {
 			if NodeExists(nodeID, blockMetadata.ConsenterIds) {
-				continue
+				continue // 如果节点仍然有效（存在于ConsenterIds中），则跳过
 			}
-			raftConfChange.NodeID = nodeID
+			raftConfChange.NodeID = nodeID // 找到需移除的节点ID
 		}
 	}
 
+	// 返回计算好的配置变更对象
 	return raftConfChange
 }
 

@@ -219,28 +219,37 @@ func SignOrPanic(signer identity.Signer, msg []byte) []byte {
 	return sigma
 }
 
-// IsConfigBlock validates whenever given block contains configuration
-// update transaction
+// IsConfigBlock 验证给定的区块是否包含配置更新交易
 func IsConfigBlock(block *cb.Block) bool {
+	// 尝试从区块中提取信封（Envelope）的第一个元素
 	envelope, err := ExtractEnvelope(block, 0)
 	if err != nil {
+		// 提取失败则返回false，表示不是配置区块
 		return false
 	}
 
+	// 解析信封的Payload部分
 	payload, err := UnmarshalPayload(envelope.Payload)
 	if err != nil {
+		// 解析Payload失败则返回false
 		return false
 	}
 
+	// 检查Payload的Header是否存在
 	if payload.Header == nil {
 		return false
 	}
 
+	// 解析ChannelHeader，获取头部类型信息
 	hdr, err := UnmarshalChannelHeader(payload.Header.ChannelHeader)
 	if err != nil {
+		// 解析ChannelHeader失败则返回false
 		return false
 	}
 
+	// 判断ChannelHeader的类型是否为配置类型或排序交易类型
+	// cb.HeaderType_CONFIG 表示配置类型交易
+	// cb.HeaderType_ORDERER_TRANSACTION 表示排序服务交易，也可能是包含配置更新的交易
 	return cb.HeaderType(hdr.Type) == cb.HeaderType_CONFIG || cb.HeaderType(hdr.Type) == cb.HeaderType_ORDERER_TRANSACTION
 }
 

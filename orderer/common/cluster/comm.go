@@ -237,7 +237,7 @@ func (c *Comm) Remote(channel string, id uint64) (*RemoteContext, error) {
 func (c *Comm) Configure(channel string, newNodes []RemoteNode) {
 	// 遍历新节点列表，打印日志信息，显示即将加入的节点详情。
 	for _, node := range newNodes {
-		c.Logger.Infof("加入共识, 通道: %s, 节点: [ID:%d,Endpoint:%s]", channel, node.ID, node.Endpoint)
+		c.Logger.Infof("加入共识成功, 通道: %s, 节点: [ID:%d,Endpoint:%s]", channel, node.ID, node.Endpoint)
 	}
 	// 打印退出日志信息。
 	defer c.Logger.Infof("退出")
@@ -288,14 +288,15 @@ func (c *Comm) Shutdown() {
 	}
 }
 
-// cleanUnusedConnections disconnects all connections that are un-used
-// at the moment of the invocation
+// cleanUnusedConnections 函数断开所有在调用时刻未被使用的连接。
 func (c *Comm) cleanUnusedConnections(serverCertsBeforeConfig StringSet) {
-	// Scan all nodes after the reconfiguration
+	// 重新配置后，扫描所有节点。
 	serverCertsAfterConfig := c.serverCertsInUse()
-	// Filter out the certificates that remained after the reconfiguration
+
+	// 筛选出在重新配置后仍存在的证书，后面将过滤掉这些不再需要的证书。
 	serverCertsBeforeConfig.subtract(serverCertsAfterConfig)
-	// Close the connections to all these nodes as they shouldn't be in use now
+
+	// 断开与这些节点的所有连接，因为它们现在不应该再被使用。
 	for serverCertificate := range serverCertsBeforeConfig {
 		c.Connections.Disconnect([]byte(serverCertificate))
 	}
@@ -529,26 +530,26 @@ type RemoteContext struct {
 	workerCountReporter              workerCountReporter
 }
 
-// Stream is used to send/receive messages to/from the remote cluster member.
+// Stream 用于与远程集群成员发送/接收消息。
 type Stream struct {
-	abortChan <-chan struct{}
-	sendBuff  chan struct {
+	abortChan <-chan struct{} // 用于中止流的通道
+	sendBuff  chan struct {   // 发送缓冲通道，包含请求和报告函数
 		request *orderer.StepRequest
 		report  func(error)
 	}
-	commShutdown chan struct{}
-	abortReason  *atomic.Value
-	metrics      *Metrics
-	ID           uint64
-	Channel      string
-	NodeName     string
-	Endpoint     string
-	Logger       *flogging.FabricLogger
-	Timeout      time.Duration
-	orderer.Cluster_StepClient
-	Cancel   func(error)
-	canceled *uint32
-	expCheck *certificateExpirationCheck
+	commShutdown               chan struct{}               // 通信关闭通道
+	abortReason                *atomic.Value               // 中止原因的原子值
+	metrics                    *Metrics                    // 指标
+	ID                         uint64                      // 流的唯一标识
+	Channel                    string                      // 通道名称
+	NodeName                   string                      // 节点名称
+	Endpoint                   string                      // 终端点
+	Logger                     *flogging.FabricLogger      // 日志记录器
+	Timeout                    time.Duration               // 超时时间
+	orderer.Cluster_StepClient                             // 集群步骤客户端
+	Cancel                     func(error)                 // 取消函数
+	canceled                   *uint32                     // 取消标志
+	expCheck                   *certificateExpirationCheck // 证书过期检查
 }
 
 // StreamOperation denotes an operation done by a stream, such a Send or Receive.
@@ -564,14 +565,14 @@ func (stream *Stream) Send(request *orderer.StepRequest) error {
 	return stream.SendWithReport(request, func(_ error) {})
 }
 
-// SendWithReport sends the given request to the remote cluster member and invokes report on the send result.
+// SendWithReport 方法向远程集群成员发送给定请求，并在发送结果上调用 report 函数。
 func (stream *Stream) SendWithReport(request *orderer.StepRequest, report func(error)) error {
 	if stream.Canceled() {
 		return errors.New(stream.abortReason.Load().(string))
 	}
 	var allowDrop bool
-	// We want to drop consensus transactions if the remote node cannot keep up with us,
-	// otherwise we'll slow down the entire FSM.
+	// 如果请求是共识请求，我们希望在远程节点跟不上时丢弃共识交易，
+	// 否则会拖慢整个有限状态机的速度。
 	if request.GetConsensusRequest() != nil {
 		allowDrop = true
 	}
@@ -579,16 +580,17 @@ func (stream *Stream) SendWithReport(request *orderer.StepRequest, report func(e
 	return stream.sendOrDrop(request, allowDrop, report)
 }
 
-// sendOrDrop sends the given request to the remote cluster member, or drops it
-// if it is a consensus request and the queue is full.
+// sendOrDrop 方法向远程集群成员发送给定请求，或者在共识请求且队列已满时丢弃请求。
 func (stream *Stream) sendOrDrop(request *orderer.StepRequest, allowDrop bool, report func(error)) error {
 	msgType := "transaction"
 	if allowDrop {
 		msgType = "consensus"
 	}
 
+	// 报告队列占用情况
 	stream.metrics.reportQueueOccupancy(stream.Endpoint, msgType, stream.Channel, len(stream.sendBuff), cap(stream.sendBuff))
 
+	// 如果允许丢弃并且队列已满，则取消流并报告消息被丢弃
 	if allowDrop && len(stream.sendBuff) == cap(stream.sendBuff) {
 		stream.Cancel(errOverflow)
 		stream.metrics.reportMessagesDropped(stream.Endpoint, stream.Channel)
@@ -597,7 +599,8 @@ func (stream *Stream) sendOrDrop(request *orderer.StepRequest, allowDrop bool, r
 
 	select {
 	case <-stream.abortChan:
-		return errors.Errorf("stream %d aborted", stream.ID)
+		return errors.Errorf("流 %d 已中止", stream.ID)
+	// 这里将消息雪茹到sendBuff通道, 由之前创建的流发送 sendMessage()
 	case stream.sendBuff <- struct {
 		request *orderer.StepRequest
 		report  func(error)
@@ -608,52 +611,55 @@ func (stream *Stream) sendOrDrop(request *orderer.StepRequest, allowDrop bool, r
 	}
 }
 
-// sendMessage sends the request down the stream
+// 将请求发送到流中
 func (stream *Stream) sendMessage(request *orderer.StepRequest, report func(error)) {
-	start := time.Now()
+	start := time.Now() // 记录开始时间
 	var err error
 	defer func() {
-		message := fmt.Sprintf("Send of %s to %s(%s) took %v",
-			requestAsString(request), stream.NodeName, stream.Endpoint, time.Since(start))
+		message := fmt.Sprintf("发送 %s 到 %s(%s) 花费 %v",
+			requestAsString(request), stream.NodeName, stream.Endpoint, time.Since(start)) // 构建消息字符串
 		if err != nil {
-			stream.Logger.Warnf("%s but failed due to %s", message, err.Error())
+			stream.Logger.Warnf("%s 但由于 %s 失败", message, err.Error()) // 记录警告日志
 		} else {
-			stream.Logger.Debug(message)
+			stream.Logger.Debug(message) // 记录调试日志
 		}
 	}()
 
+	// 在流上执行给定操作，并阻塞直到超时到期。
 	f := func() (*orderer.StepResponse, error) {
 		startSend := time.Now()
-		stream.expCheck.checkExpiration(startSend, stream.Channel)
-		err := stream.Cluster_StepClient.Send(request)
-		stream.metrics.reportMsgSendTime(stream.Endpoint, stream.Channel, time.Since(startSend))
+		stream.expCheck.checkExpiration(startSend, stream.Channel)                               // 检查证书过期
+		err := stream.Cluster_StepClient.Send(request)                                           // 发送请求
+		stream.metrics.reportMsgSendTime(stream.Endpoint, stream.Channel, time.Since(startSend)) // 报告消息发送时间
 		return nil, err
 	}
 
+	// 使用超时操作发送消息, 内部调用f()执行发送
 	_, err = stream.operateWithTimeout(f, report)
 }
 
+// 服务流, 这里是发送请求的核心位置
 func (stream *Stream) serviceStream() {
-	streamStartTime := time.Now()
+	streamStartTime := time.Now() // 记录流开始时间
 	defer func() {
-		stream.Cancel(errAborted)
-		stream.Logger.Debugf("Stream %d to (%s) terminated with total lifetime of %s",
-			stream.ID, stream.Endpoint, time.Since(streamStartTime))
+		stream.Cancel(errAborted) // 在函数结束时取消流
+		stream.Logger.Debugf("流 %d 到 (%s) 终止，总生命周期为 %s",
+			stream.ID, stream.Endpoint, time.Since(streamStartTime)) // 记录流的总生命周期
 	}()
 
 	for {
 		select {
-		case reqReport := <-stream.sendBuff:
-			stream.sendMessage(reqReport.request, reqReport.report)
-		case <-stream.abortChan:
+		case reqReport := <-stream.sendBuff: // 从发送缓冲通道接收请求和报告函数
+			stream.sendMessage(reqReport.request, reqReport.report) // 处理发送消息
+		case <-stream.abortChan: // 如果中止通道有信号，则结束循环
 			return
-		case <-stream.commShutdown:
+		case <-stream.commShutdown: // 如果通信关闭通道有信号，则结束循环
 			return
 		}
 	}
 }
 
-// Recv receives a message from a remote cluster member.
+// Recv 接收来自远程集群成员的消息。
 func (stream *Stream) Recv() (*orderer.StepResponse, error) {
 	start := time.Now()
 	defer func() {
@@ -670,9 +676,9 @@ func (stream *Stream) Recv() (*orderer.StepResponse, error) {
 	return stream.operateWithTimeout(f, func(_ error) {})
 }
 
-// operateWithTimeout performs the given operation on the stream, and blocks until the timeout expires.
+// operateWithTimeout 在流上执行给定操作，并阻塞直到超时到期。
 func (stream *Stream) operateWithTimeout(invoke StreamOperation, report func(error)) (*orderer.StepResponse, error) {
-	timer := time.NewTimer(stream.Timeout)
+	timer := time.NewTimer(stream.Timeout) // 创建定时器
 	defer timer.Stop()
 
 	var operationEnded sync.WaitGroup
@@ -683,8 +689,10 @@ func (stream *Stream) operateWithTimeout(invoke StreamOperation, report func(err
 		err error
 	}, 1)
 
+	// 启动一个 goroutine 执行操作
 	go func() {
 		defer operationEnded.Done()
+		// 执行发送/接受消息到raft
 		res, err := invoke()
 		responseChan <- struct {
 			res *orderer.StepResponse
@@ -693,18 +701,20 @@ func (stream *Stream) operateWithTimeout(invoke StreamOperation, report func(err
 	}()
 
 	select {
-	case r := <-responseChan:
+	case r := <-responseChan: // 接收操作结果
+		// 回调
 		report(r.err)
 		if r.err != nil {
 			stream.Cancel(r.err)
 		}
 		return r.res, r.err
-	case <-timer.C:
+	case <-timer.C: // 超时处理
+		// 回调
 		report(errTimeout)
-		stream.Logger.Warningf("Stream %d to %s(%s) was forcibly terminated because timeout (%v) expired",
+		stream.Logger.Warningf("流 %d 到 %s(%s) 因超时 (%v) 被强制终止",
 			stream.ID, stream.NodeName, stream.Endpoint, stream.Timeout)
 		stream.Cancel(errTimeout)
-		// Wait for the operation goroutine to end
+		// 等待操作 goroutine 结束
 		operationEnded.Wait()
 		return nil, errTimeout
 	}
@@ -726,13 +736,15 @@ func requestAsString(request *orderer.StepRequest) string {
 	}
 }
 
-// NewStream creates a new stream.
-// It is not thread safe, and Send() or Recv() block only until the timeout expires.
+// NewStream 创建一个新流, 这里是发送请求的核心位置。
+// 它不是线程安全的，Send() 或 Recv() 只会阻塞直到超时到期。
 func (rc *RemoteContext) NewStream(timeout time.Duration) (*Stream, error) {
+	// 检查连接是否可用
 	if err := rc.ProbeConn(rc.conn); err != nil {
 		return nil, err
 	}
 
+	// 创建上下文和流
 	ctx, cancel := context.WithCancel(context.TODO())
 	stream, err := rc.Client.Step(ctx)
 	if err != nil {
@@ -740,70 +752,78 @@ func (rc *RemoteContext) NewStream(timeout time.Duration) (*Stream, error) {
 		return nil, errors.WithStack(err)
 	}
 
+	// 生成流ID和节点名称
 	streamID := atomic.AddUint64(&rc.nextStreamID, 1)
 	nodeName := commonNameFromContext(stream.Context())
 
 	var canceled uint32
 
+	// 初始化中止通道和中止原因
 	abortChan := make(chan struct{})
 	abortReason := &atomic.Value{}
 
 	once := &sync.Once{}
 
+	// 带原因取消函数
 	cancelWithReason := func(err error) {
 		once.Do(func() {
 			abortReason.Store(err.Error())
 			cancel()
 			rc.streamsByID.Delete(streamID)
 			rc.Metrics.reportEgressStreamCount(rc.Channel, atomic.LoadUint32(&rc.streamsByID.size))
-			rc.Logger.Debugf("Stream %d to %s(%s) is aborted", streamID, nodeName, rc.endpoint)
+			rc.Logger.Debugf("流 %d 到 %s(%s) 已中止", streamID, nodeName, rc.endpoint)
 			atomic.StoreUint32(&canceled, 1)
 			close(abortChan)
 		})
 	}
 
+	// 日志记录器
 	logger := flogging.MustGetLogger("orderer.common.cluster.step")
 	stepLogger := logger.WithOptions(zap.AddCallerSkip(1))
 
+	// 创建流对象
 	s := &Stream{
-		Channel:     rc.Channel,
-		metrics:     rc.Metrics,
-		abortReason: abortReason,
-		abortChan:   abortChan,
-		sendBuff: make(chan struct {
+		Channel:     rc.Channel,  // 设置通道名称
+		metrics:     rc.Metrics,  // 设置指标
+		abortReason: abortReason, // 设置中止原因
+		abortChan:   abortChan,   // 设置中止通道
+		sendBuff: make(chan struct { // 创建发送缓冲通道
 			request *orderer.StepRequest
 			report  func(error)
-		}, rc.SendBuffSize),
-		commShutdown:       rc.shutdownSignal,
-		NodeName:           nodeName,
-		Logger:             stepLogger,
-		ID:                 streamID,
-		Endpoint:           rc.endpoint,
-		Timeout:            timeout,
-		Cluster_StepClient: stream,
-		Cancel:             cancelWithReason,
-		canceled:           &canceled,
+		}, rc.SendBuffSize), // 设置缓冲通道大小
+		commShutdown:       rc.shutdownSignal, // 设置通信关闭通道
+		NodeName:           nodeName,          // 设置节点名称
+		Logger:             stepLogger,        // 设置日志记录器
+		ID:                 streamID,          // 设置流ID
+		Endpoint:           rc.endpoint,       // 设置终端点
+		Timeout:            timeout,           // 设置超时时间
+		Cluster_StepClient: stream,            // 设置集群步骤客户端
+		Cancel:             cancelWithReason,  // 设置取消函数
+		canceled:           &canceled,         // 设置取消标志
 	}
 
+	// 证书过期检查
 	s.expCheck = &certificateExpirationCheck{
-		minimumExpirationWarningInterval: rc.minimumExpirationWarningInterval,
-		expirationWarningThreshold:       rc.certExpWarningThreshold,
-		expiresAt:                        rc.expiresAt,
-		endpoint:                         s.Endpoint,
-		nodeName:                         s.NodeName,
-		alert: func(template string, args ...interface{}) {
+		minimumExpirationWarningInterval: rc.minimumExpirationWarningInterval, // 设置最小过期警告间隔
+		expirationWarningThreshold:       rc.certExpWarningThreshold,          // 设置过期警告阈值
+		expiresAt:                        rc.expiresAt,                        // 设置过期时间
+		endpoint:                         s.Endpoint,                          // 设置终端点
+		nodeName:                         s.NodeName,                          // 设置节点名称
+		alert: func(template string, args ...interface{}) { // 设置警告函数
 			s.Logger.Warningf(template, args...)
 		},
 	}
 
-	rc.Logger.Debugf("Created new stream to %s with ID of %d and buffer size of %d",
+	rc.Logger.Debugf("创建到 %s 的新流，ID 为 %d，缓冲区大小为 %d",
 		rc.endpoint, streamID, cap(s.sendBuff))
 
 	rc.streamsByID.Store(streamID, s)
 	rc.Metrics.reportEgressStreamCount(rc.Channel, atomic.LoadUint32(&rc.streamsByID.size))
 
+	// 启动服务流程
 	go func() {
 		rc.workerCountReporter.increment(s.metrics)
+		// 服务流, 这里是发送请求的核心位置
 		s.serviceStream()
 		rc.workerCountReporter.decrement(s.metrics)
 	}()

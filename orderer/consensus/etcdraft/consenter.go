@@ -161,7 +161,7 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 	// 判断是否为迁移场景（即元数据为空且链高度大于1）
 	isMigration := (metadata == nil || len(metadata.Value) == 0) && (support.Height() > 1)
 	if isMigration {
-		c.Logger.Debugf("在块高度=%d处,区块元数据为空,这表示共识类型迁移", support.Height())
+		c.Logger.Infof("在块高度=%d处, 区块元数据为空, 这表示共识类型迁移, 需要恢复数据", support.Height())
 	}
 
 	// 根据提供的元数据和配置元数据读取Raft元数据

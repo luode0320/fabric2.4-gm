@@ -97,7 +97,7 @@ func (s *RPC) SendConsensus(destination uint64, msg *orderer.ConsensusRequest) e
 		defer s.consensusSent(time.Now(), destination, msg)
 	}
 
-	// 获取或创建与目标节点的流
+	// 获取或创建与目标节点的流,这里是发送请求的核心位置
 	stream, err := s.getOrCreateStream(destination, ConsensusOperation)
 	if err != nil {
 		return err
@@ -123,36 +123,42 @@ func (s *RPC) SendConsensus(destination uint64, msg *orderer.ConsensusRequest) e
 	return err
 }
 
-// SendSubmit sends a SubmitRequest to the given destination node.
+// SendSubmit 方法向指定目标节点发送 SubmitRequest。
 func (s *RPC) SendSubmit(destination uint64, request *orderer.SubmitRequest, report func(error)) error {
 	if s.Logger.IsEnabledFor(zapcore.DebugLevel) {
 		defer s.submitSent(time.Now(), destination, request)
 	}
 
+	// 获取或创建与目标节点的流,这里是发送请求的核心位置
 	stream, err := s.getOrCreateStream(destination, SubmitOperation)
 	if err != nil {
 		return err
 	}
 
+	// 构建 StepRequest
 	req := &orderer.StepRequest{
 		Payload: &orderer.StepRequest_SubmitRequest{
 			SubmitRequest: request,
 		},
 	}
 
+	// 处理发送失败时的操作
 	unmapOnFailure := func(err error) {
 		if err != nil && err.Error() == io.EOF.Error() {
-			s.Logger.Infof("Un-mapping transaction stream to %d because encountered a stale stream", destination)
+			s.Logger.Infof("因遇到过时流，取消映射到 %d 的事务流", destination)
 			s.unMapStream(destination, SubmitOperation, stream.ID)
 		}
 		report(err)
 	}
 
+	// 加锁保证发送的原子性
 	s.submitLock.Lock()
 	defer s.submitLock.Unlock()
 
+	// 发送请求并处理发送结果, 方法向远程集群成员发送给定请求，并在发送结果上调用 unmapOnFailure 函数。
 	err = stream.SendWithReport(req, unmapOnFailure)
 	if err != nil {
+		// 取消映射指定类型和目标节点的流
 		s.unMapStream(destination, SubmitOperation, stream.ID)
 	}
 	return err
@@ -166,7 +172,7 @@ func (s *RPC) consensusSent(start time.Time, to uint64, msg *orderer.ConsensusRe
 	s.Logger.Debugf("Sending msg of %d bytes to %d on channel %s took %v", len(msg.Payload), to, s.Channel, time.Since(start))
 }
 
-// getOrCreateStream 获取给定目标节点的Submit流。
+// getOrCreateStream 获取给定目标节点的Submit流,这里是发送请求的核心位置。
 // 方法接收者：s（RPC类型的指针）
 // 输入参数：
 //   - destination：目标节点的ID。
@@ -188,7 +194,7 @@ func (s *RPC) getOrCreateStream(destination uint64, operationType OperationType)
 		return nil, errors.WithStack(err)
 	}
 
-	// 创建新的流
+	// 创建新的流,这里是发送请求的核心位置
 	stream, err = stub.NewStream(s.Timeout)
 	if err != nil {
 		return nil, err
@@ -213,21 +219,25 @@ func (s *RPC) mapStream(destination uint64, stream *Stream, operationType Operat
 	s.cleanCanceledStreams(operationType)
 }
 
+// 取消映射指定类型和目标节点的流
 func (s *RPC) unMapStream(destination uint64, operationType OperationType, streamIDToUnmap uint64) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	// 获取指定类型和目标节点的流
 	stream, exists := s.StreamsByType[operationType][destination]
 	if !exists {
-		s.Logger.Debugf("No %s stream to %d found, nothing to unmap", operationType, destination)
+		s.Logger.Debugf("未找到发送至 %d 的 %s 流，无需取消映射", destination, operationType)
 		return
 	}
 
+	// 检查要取消映射的流是否匹配
 	if stream.ID != streamIDToUnmap {
-		s.Logger.Debugf("Stream for %s to %d has an ID of %d, not %d", operationType, destination, stream.ID, streamIDToUnmap)
+		s.Logger.Debugf("%s 流至 %d 的 ID 为 %d，与要取消映射的 ID %d 不匹配", operationType, destination, stream.ID, streamIDToUnmap)
 		return
 	}
 
+	// 取消映射指定类型和目标节点的流
 	delete(s.StreamsByType[operationType], destination)
 }
 

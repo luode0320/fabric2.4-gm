@@ -183,8 +183,8 @@ type Options struct {
 }
 
 type submit struct {
-	req    *orderer.SubmitRequest
-	leader chan uint64
+	req    *orderer.SubmitRequest // 提交请求
+	leader chan uint64            // 领导者通道
 }
 
 type gc struct {
@@ -211,7 +211,7 @@ type Chain struct {
 	// ActiveNodes 是一个原子变量，用于存储当前活跃节点的列表，方便在集群中快速查找和通知。
 	ActiveNodes atomic.Value
 
-	// submitC 是提交通道，用于接收来自客户端的提案。
+	// submitC 是提交通道，用于接收来自客户端的提案(收集到这里后才可以发送)。
 	submitC chan *submit
 	// applyC 是应用通道，用于接收 raft 状态机应用的条目，触发本地状态的更新。
 	applyC chan apply
@@ -261,7 +261,7 @@ type Chain struct {
 	// createPuller 是一个函数，用于按需创建 BlockPuller 实例，实现区块的远程拉取。
 	createPuller CreateBlockPuller
 
-	// fresh 用于标记这是不是一个全新的 raft 节点，初始启动时使用。
+	// fresh 用于标记这是不是一个全新的 raft 节点，初始启动时使用, 由是否存在共识日志文件判断
 	fresh bool
 
 	// Node 是 raft 状态机的节点实例，对外暴露状态和操作。
@@ -473,11 +473,12 @@ func (c *Chain) Start() {
 	// 判断是否为加入现有链
 	isJoin := c.support.Height() > 1
 	if isJoin && c.opts.MigrationInit {
-		isJoin = false // 如果是共识类型迁移，视为新节点启动而非加入。
-		c.logger.Infof("检测到共识类型迁移，正在现有通道上启动新的 Raft 节点；高度=%d", c.support.Height())
+		// 如果是共识类型迁移，视为新节点启动而非加入。
+		isJoin = false
+		c.logger.Infof("检测到共识类型迁移, 正在现有通道上启动新的 Raft 节点, 高度=%d", c.support.Height())
 	}
 
-	// 调用 Node 的 start 方法，开始 Raft 节点的运行。
+	// 调用 Node 的 start 方法，开始 Raft 节点的运行, 这里有接受其他节点消息的处理。
 	c.Node.start(c.fresh, isJoin)
 
 	// 关闭 startC 通道，表示链已经启动。
@@ -487,7 +488,7 @@ func (c *Chain) Start() {
 
 	// 启动垃圾回收协程，用于定期清理过期的快照和日志。
 	go c.gc()
-	// 启动主运行协程，负责处理提案、应用状态和通信等核心任务。
+	// 启动主运行协程，负责处理提案、应用状态和通信等核心任务, 这里有发送给其他节点消息的处理。
 	go c.run()
 
 	// 创建一个 EvictionSuspector 实例，用于检测节点是否可能被驱逐。
@@ -522,10 +523,10 @@ func (c *Chain) Configure(env *common.Envelope, configSeq uint64) error {
 	return c.Submit(&orderer.SubmitRequest{LastValidationSeq: configSeq, Payload: env, Channel: c.channelID}, 0)
 }
 
-// WaitReady blocks when the chain:
-// - is catching up with other nodes using snapshot
+// WaitReady 区块链时:
+// - 正在使用快照赶上其他节点
 //
-// In any other case, it returns right away.
+// 在任何其他情况下，它立即返回。
 func (c *Chain) WaitReady() error {
 	if err := c.isRunning(); err != nil {
 		return err
@@ -534,7 +535,7 @@ func (c *Chain) WaitReady() error {
 	select {
 	case c.submitC <- nil:
 	case <-c.doneC:
-		return errors.Errorf("chain is stopped")
+		return errors.Errorf("链已停止")
 	}
 
 	return nil
@@ -599,16 +600,19 @@ func (c *Chain) halt() {
 	c.Metrics.ActiveNodes.Set(float64(0))
 }
 
+// 检查通道共识是否已经启动
 func (c *Chain) isRunning() error {
+	// 检查链是否已经启动
 	select {
 	case <-c.startC:
 	default:
-		return errors.Errorf("chain is not started")
+		return errors.Errorf("通道共识尚未启动")
 	}
 
+	// 检查链是否已经停止
 	select {
 	case <-c.doneC:
-		return errors.Errorf("chain is stopped")
+		return errors.Errorf("通道共识已停止")
 	default:
 	}
 
@@ -665,11 +669,12 @@ func (c *Chain) Consensus(req *orderer.ConsensusRequest, sender uint64) error {
 	return nil
 }
 
-// Submit forwards the incoming request to:
-// - the local run goroutine if this is leader
-// - the actual leader via the transport mechanism
-// The call fails if there's no leader elected yet.
+// Submit 方法将传入的请求转发至：
+// - 如果当前节点是领导者，则转发至本地运行的 goroutine (跳过)
+// - 如果当前节点不是领导者，则通过传输机制转发至实际领导者
+// 如果尚未选举出领导者，则调用失败。
 func (c *Chain) Submit(req *orderer.SubmitRequest, sender uint64) error {
+	// 检查通道共识是否已经启动
 	if err := c.isRunning(); err != nil {
 		c.Metrics.ProposalFailures.Add(1)
 		return err
@@ -681,10 +686,11 @@ func (c *Chain) Submit(req *orderer.SubmitRequest, sender uint64) error {
 		lead := <-leadC
 		if lead == raft.None {
 			c.Metrics.ProposalFailures.Add(1)
-			return errors.Errorf("no Raft leader")
+			return errors.Errorf("没有 Raft 领导者")
 		}
 
 		if lead != c.raftID {
+			// 转发给领导
 			if err := c.forwardToLeader(lead, req); err != nil {
 				return err
 			}
@@ -692,20 +698,22 @@ func (c *Chain) Submit(req *orderer.SubmitRequest, sender uint64) error {
 
 	case <-c.doneC:
 		c.Metrics.ProposalFailures.Add(1)
-		return errors.Errorf("chain is stopped")
+		return errors.Errorf("通道共识已停止")
 	}
 
 	return nil
 }
 
+// 将交易转发至领导者
 func (c *Chain) forwardToLeader(lead uint64, req *orderer.SubmitRequest) error {
-	c.logger.Infof("Forwarding transaction to the leader %d", lead)
+	c.logger.Infof("将交易转发至领导者 %d", lead)
 	timer := time.NewTimer(c.opts.RPCTimeout)
 	defer timer.Stop()
 
 	sentChan := make(chan struct{})
 	atomicErr := &atomic.Value{}
 
+	// report 函数用于处理发送请求后的结果
 	report := func(err error) {
 		if err != nil {
 			atomicErr.Store(err.Error())
@@ -714,14 +722,15 @@ func (c *Chain) forwardToLeader(lead uint64, req *orderer.SubmitRequest) error {
 		close(sentChan)
 	}
 
+	// 调用 RPC 发送请求至领导者
 	c.rpc.SendSubmit(lead, req, report)
 
 	select {
 	case <-sentChan:
 	case <-c.doneC:
-		return errors.Errorf("chain is stopped")
+		return errors.Errorf("链已停止")
 	case <-timer.C:
-		return errors.Errorf("timed out (%v) waiting on forwarding to %d", c.opts.RPCTimeout, lead)
+		return errors.Errorf("转发至 %d 时超时 (%v)", lead, c.opts.RPCTimeout)
 	}
 
 	if atomicErr.Load() != nil {
@@ -730,217 +739,269 @@ func (c *Chain) forwardToLeader(lead uint64, req *orderer.SubmitRequest) error {
 	return nil
 }
 
+// raft的日志和状态结构体
 type apply struct {
-	entries []raftpb.Entry
-	soft    *raft.SoftState
+	entries []raftpb.Entry  // 用于存储 Raft 日志条目
+	soft    *raft.SoftState // 用于存储 Raft 节点的软状态信息(节点id)
 }
 
+// 是否是候选者
 func isCandidate(state raft.StateType) bool {
 	return state == raft.StatePreCandidate || state == raft.StateCandidate
 }
 
 func (c *Chain) run() {
+	// 初始化ticker状态和定时器
+	// ticking 用来标记定时器是否正在运行
 	ticking := false
+	// 使用clock创建一个定时器，初始设定为1秒后触发
 	timer := c.clock.NewTimer(time.Second)
-	// we need a stopped timer rather than nil,
-	// because we will be select waiting on timer.C()
+	// 确保定时器在开始前处于停止状态，若已启动则等待其完成并消费掉触发的事件
 	if !timer.Stop() {
 		<-timer.C()
 	}
 
-	// if timer is already started, this is a no-op
+	// 定义启动定时器的辅助函数
+	// 若定时器未运行，则设置新的超时时间并标记为运行中
 	startTimer := func() {
 		if !ticking {
 			ticking = true
+			// 重置定时器，使用共识批次处理超时时间作为新的超时期限
 			timer.Reset(c.support.SharedConfig().BatchTimeout())
 		}
 	}
 
+	// 定义停止定时器的辅助函数
+	// 停止定时器并清空已到期但未处理的事件，同时更新ticker状态为未运行
 	stopTimer := func() {
 		if !timer.Stop() && ticking {
-			// we only need to drain the channel if the timer expired (not explicitly stopped)
+			// 若定时器无法停止（意味着它已经触发但事件未被消费），则消费掉这个事件
 			<-timer.C()
 		}
 		ticking = false
 	}
 
+	// 初始化关键变量
+	// soft 用于记录Raft的软状态信息，如当前领导者等
 	var soft raft.SoftState
+	// submitC 是交易提交通道，用于接收待排序的交易
 	submitC := c.submitC
+
+	// 初始化区块创建器实例，用于构造新的区块
 	var bc *blockCreator
-
+	// 初始化提案通道和取消函数，用于管理向Raft提交区块的过程
+	// propC 用于发送待提议的区块
 	var propC chan<- *common.Block
+	// cancelProp 用于取消正在进行的提案过程
 	var cancelProp context.CancelFunc
-	cancelProp = func() {} // no-op as initial value
+	// 初始化cancelProp为一个空操作函数，避免未定义错误
+	cancelProp = func() {}
 
+	// 定义角色转变函数
 	becomeLeader := func() (chan<- *common.Block, context.CancelFunc) {
+		// 设置当前节点为领导者状态的监控指标
 		c.Metrics.IsLeader.Set(1)
-
+		// 重置当前节点正在处理的区块数量（飞行中的区块）
 		c.blockInflight = 0
+		// 标记此节点刚刚当选为领导者
 		c.justElected = true
+		// 当前节点成为领导者后，不再直接从submitC接收交易，因此将其设为nil
 		submitC = nil
+		// 创建一个新的区块提案通道，容量限制为允许的最大并发区块数
 		ch := make(chan *common.Block, c.opts.MaxInflightBlocks)
 
-		// if there is unfinished ConfChange, we should resume the effort to propose it as
-		// new leader, and wait for it to be committed before start serving new requests.
+		// 如果存在未完成的配置变更请求（ConfChange），则尝试继续推进该变更集合。是否有新的raft节点, 或者排除的节点
 		if cc := c.getInFlightConfChange(); cc != nil {
-			// The reason `ProposeConfChange` should be called in go routine is documented in `writeConfigBlock` method.
+			// 异步尝试向Raft节点提议配置变更。这一步需要在goroutine中执行，以避免阻塞其他关键操作，
+			// 特别是在网络负载较高时，领导者可能因失去领导地位而阻塞。
 			go func() {
 				if err := c.Node.ProposeConfChange(context.TODO(), *cc); err != nil {
-					c.logger.Warnf("Failed to propose configuration update to Raft node: %s", err)
+					c.logger.Warnf("向Raft节点提议配置更新失败: %s", err)
 				}
 			}()
 
+			// 标记有配置变更正在进行，并设置配置变更飞行标志
 			c.confChangeInProgress = cc
 			c.configInflight = true
 		}
 
-		// Leader should call Propose in go routine, because this method may be blocked
-		// if node is leaderless (this can happen when leader steps down in a heavily
-		// loaded network). We need to make sure applyC can still be consumed properly.
+		// 以领导者身份异步提议新区块到Raft共识中
+		// 使用带取消功能的上下文，确保在必要时能优雅地停止提议过程
 		ctx, cancel := context.WithCancel(context.Background())
 		go func(ctx context.Context, ch <-chan *common.Block) {
 			for {
 				select {
+				// 从通道接收待提议的区块
 				case b := <-ch:
+					// 序列化区块数据，准备提交给Raft
 					data := protoutil.MarshalOrPanic(b)
+					// 提议区块到Raft，若失败则记录错误并返回
 					if err := c.Node.Propose(ctx, data); err != nil {
-						c.logger.Errorf("Failed to propose block [%d] to raft and discard %d blocks in queue: %s", b.Header.Number, len(ch), err)
+						c.logger.Errorf("向Raft提议区块[%d]失败，丢弃队列中%d个区块: %s", b.Header.Number, len(ch), err)
 						return
 					}
-					c.logger.Debugf("Proposed block [%d] to raft consensus", b.Header.Number)
+					// 成功提议后记录日志
+					c.logger.Debugf("向Raft共识提议了区块[%d]", b.Header.Number)
 
+				// 上下文被取消时，退出提议循环
 				case <-ctx.Done():
-					c.logger.Debugf("Quit proposing blocks, discarded %d blocks in the queue", len(ch))
+					c.logger.Debugf("停止提议区块，队列中丢弃了%d个区块", len(ch))
 					return
 				}
 			}
 		}(ctx, ch)
 
+		// 返回新创建的提案通道和取消函数，以便外部控制提议流程
 		return ch, cancel
 	}
 
+	// becomeFollower 定义了一个转换到跟随者状态的操作流程。
+	// 当节点不再是Raft集群的领导者时，需要执行以下操作：
 	becomeFollower := func() {
+		// 1. 调用cancelProp取消正在进行的提案上下文，停止任何待处理的区块提议操作。
 		cancelProp()
+		// 2. 重置blockInflight计数器，表示当前没有区块正处于飞行中（等待Raft共识确认）。
 		c.blockInflight = 0
+		// 3. 调用BlockCutter的Cut方法尝试切割并处理当前累积的交易批次，这通常是为确保跟随者状态下交易的有序处理。
 		_ = c.support.BlockCutter().Cut()
+		// 4. 停止之前启动的定时器，避免在跟随者状态下不必要的定时任务执行。
 		stopTimer()
+		// 5. 将交易提交通道submitC重置为默认的提交通道，跟随者直接通过此通道接收交易请求。
 		submitC = c.submitC
+		// 6. 将区块创建器实例bc设置为nil，因为在跟随者状态下不需要创建新的区块。
 		bc = nil
+		// 7. 更新监控指标，将IsLeader指标设置为0，表明当前节点不再是领导者。
 		c.Metrics.IsLeader.Set(0)
 	}
 
 	for {
 		select {
 		case s := <-submitC:
+			// 检查是否有空消息，这可能是由`WaitReady`调用触发的轮询
 			if s == nil {
-				// polled by `WaitReady`
 				continue
 			}
 
+			// 如果当前Raft状态为预候选人或候选状态，说明尚未选举出领导者，通知请求者当前无领导者
 			if soft.RaftState == raft.StatePreCandidate || soft.RaftState == raft.StateCandidate {
 				s.leader <- raft.None
 				continue
 			}
 
+			// 通知请求者当前已知的领导者ID
 			s.leader <- soft.Lead
+			// 如果当前节点不是领导者，则跳过后续处理
 			if soft.Lead != c.raftID {
 				continue
 			}
 
+			// 对请求进行排序，得到批次切片以及是否有挂起的请求标识
 			batches, pending, err := c.ordered(s.req)
 			if err != nil {
-				c.logger.Errorf("Failed to order message: %s", err)
+				c.logger.Errorf("排序消息失败, 记录错误并继续处理下一个请求: %s", err)
 				continue
 			}
 
+			// 如果没有挂起的请求且批次为空，直接跳过
 			if !pending && len(batches) == 0 {
 				continue
 			}
 
+			// 根据是否有挂起请求来决定是否启动或停止定时器
 			if pending {
-				startTimer() // no-op if timer is already started
+				startTimer() // 定时器已启动则此操作无效果
 			} else {
 				stopTimer()
 			}
 
+			// 提交批次到Raft共识中
 			c.propose(propC, bc, batches...)
 
+			// 如果有配置变更正在进行中，暂停接受新的事务
 			if c.configInflight {
-				c.logger.Info("已接收配置事务, 暂停接受事务直到提交")
+				c.logger.Info("检测到配置事务，暂停接受新事务直至当前配置事务提交完成")
 				submitC = nil
 			} else if c.blockInflight >= c.opts.MaxInflightBlocks {
-				c.logger.Debugf("Number of in-flight blocks (%d) reaches limit (%d), pause accepting transaction",
+				c.logger.Debugf("飞行中的区块数量(%d)已达上限(%d)，暂停接受新的事务",
 					c.blockInflight, c.opts.MaxInflightBlocks)
 				submitC = nil
 			}
 
 		case app := <-c.applyC:
+			// 接受其他节点的消息
 			if app.soft != nil {
-				newLeader := atomic.LoadUint64(&app.soft.Lead) // etcdraft requires atomic access
+				newLeader := atomic.LoadUint64(&app.soft.Lead) // 使用原子操作加载新领导者
 				if newLeader != soft.Lead {
-					c.logger.Infof("Raft 共识节点的 leader 改变: 从%d -> 到%d", soft.Lead, newLeader)
+					c.logger.Infof("Raft 共识节点的 leader 领导者发生改变: 从 %d -> 到 %d", soft.Lead, newLeader)
 					c.Metrics.LeaderChanges.Add(1)
 
 					atomic.StoreUint64(&c.lastKnownLeader, newLeader)
 
 					if newLeader == c.raftID {
-						propC, cancelProp = becomeLeader()
+						// 定义角色转变函数
+						propC, cancelProp = becomeLeader() // 成为领导者
 					}
 
 					if soft.Lead == c.raftID {
-						becomeFollower()
+						becomeFollower() // 成为跟随者
 					}
 				}
 
+				// 检查是否发现新的领导者或候选者退出
+				// foundLeader 用于判断是否发现新的领导者，条件为当前领导者为空且新领导者不为空
 				foundLeader := soft.Lead == raft.None && newLeader != raft.None
+				// quitCandidate 用于判断是否候选者退出，条件为当前节点为候选者且新节点不是候选者
 				quitCandidate := isCandidate(soft.RaftState) && !isCandidate(app.soft.RaftState)
 
 				if foundLeader || quitCandidate {
-					c.errorCLock.Lock()
-					c.errorC = make(chan struct{})
-					c.errorCLock.Unlock()
+					c.errorCLock.Lock()            // 加锁以保证并发安全
+					c.errorC = make(chan struct{}) // 创建一个新的错误通道
+					c.errorCLock.Unlock()          // 解锁
 				}
 
+				// 处理节点为候选者或新领导者为空的情况
 				if isCandidate(app.soft.RaftState) || newLeader == raft.None {
+					// 使用原子操作将最后已知领导者设置为 None
 					atomic.StoreUint64(&c.lastKnownLeader, raft.None)
 					select {
 					case <-c.errorC:
 					default:
 						nodeCount := len(c.opts.BlockMetadata.ConsenterIds)
-						// Only close the error channel (to signal the broadcast/deliver front-end a consensus backend error)
-						// If we are a cluster of size 3 or more, otherwise we can't expand a cluster of size 1 to 2 nodes.
+						// 只有在集群大小大于 2 时才关闭错误通道（以向前端信号传播/传递共识后端错误）
+						// 否则无法将大小为 1 的集群扩展为 2 节点。
 						if nodeCount > 2 {
-							close(c.errorC)
+							close(c.errorC) // 关闭错误通道
 						} else {
-							c.logger.Warningf("No leader is present, cluster size is %d", nodeCount)
+							c.logger.Warningf("没有领导者存在，集群大小为 %d", nodeCount) // 记录警告日志，表示没有领导者存在
 						}
 					}
 				}
 
 				soft = raft.SoftState{Lead: newLeader, RaftState: app.soft.RaftState}
 
-				// notify external observer
+				// 通知外部观察者
 				select {
 				case c.observeC <- soft:
 				default:
 				}
 			}
 
+			// 用于处理 Raft 日志条目的应用。根据不同类型的日志条目进行相应的处理，包括写入区块、应用配置更改、处理快照等操作
 			c.apply(app.entries)
 
 			if c.justElected {
 				msgInflight := c.Node.lastIndex() > c.appliedIndex
 				if msgInflight {
-					c.logger.Debugf("There are in flight blocks, new leader should not serve requests")
+					c.logger.Debugf("有正在传输的区块，新领导者不应该处理请求")
 					continue
 				}
 
 				if c.configInflight {
-					c.logger.Debugf("There is config block in flight, new leader should not serve requests")
+					c.logger.Debugf("有配置区块正在传输，新领导者不应该处理请求")
 					continue
 				}
 
-				c.logger.Infof("Start accepting requests as Raft leader at block [%d]", c.lastBlock.Header.Number)
+				c.logger.Infof("开始接受 Raft 领导者的请求，区块 [%d]", c.lastBlock.Header.Number)
 				bc = &blockCreator{
 					hash:   protoutil.BlockHeaderHash(c.lastBlock.Header),
 					number: c.lastBlock.Header.Number,
@@ -949,7 +1010,7 @@ func (c *Chain) run() {
 				submitC = c.submitC
 				c.justElected = false
 			} else if c.configInflight {
-				c.logger.Info("Config block or ConfChange in flight, pause accepting transaction")
+				c.logger.Info("有配置区块或 ConfChange 在传输中，暂停接受交易")
 				submitC = nil
 			} else if c.blockInflight < c.opts.MaxInflightBlocks {
 				submitC = c.submitC
@@ -1004,19 +1065,20 @@ func (c *Chain) run() {
 
 func (c *Chain) writeBlock(block *common.Block, index uint64) {
 	if block.Header.Number > c.lastBlock.Header.Number+1 {
-		c.logger.Panicf("Got block [%d], expect block [%d]", block.Header.Number, c.lastBlock.Header.Number+1)
+		c.logger.Panicf("收到区块 [%d]，期望区块 [%d]", block.Header.Number, c.lastBlock.Header.Number+1)
 	} else if block.Header.Number < c.lastBlock.Header.Number+1 {
-		c.logger.Infof("Got block [%d], expect block [%d], this node was forced to catch up", block.Header.Number, c.lastBlock.Header.Number+1)
+		c.logger.Infof("收到区块 [%d]，期望区块 [%d]，此节点被迫赶上", block.Header.Number, c.lastBlock.Header.Number+1)
 		return
 	}
 
 	if c.blockInflight > 0 {
-		c.blockInflight-- // only reduce on leader
+		c.blockInflight-- // 仅在领导者上减少
 	}
 	c.lastBlock = block
 
 	c.logger.Infof("写入块 [%d] (Raft 索引: %d) 至通道账本", block.Header.Number, index)
 
+	// 验证给定的区块是否包含配置更新交易
 	if protoutil.IsConfigBlock(block) {
 		c.writeConfigBlock(block, index)
 		return
@@ -1030,68 +1092,73 @@ func (c *Chain) writeBlock(block *common.Block, index uint64) {
 	c.support.WriteBlock(block, m)
 }
 
-// Orders the envelope in the `msg` content. SubmitRequest.
-// Returns
+// 在 'msg' 内容中订购信封。提交请求。
+// 返回
 //
-//	-- batches [][]*common.Envelope; the batches cut,
-//	-- pending bool; if there are envelopes pending to be ordered,
-//	-- err error; the error encountered, if any.
+//	-- batches [][]*common.Envelope; 切分后的批次，
+//	-- pending bool; 是否有待排序的信封，
+//	-- err error; 遇到的错误，如果有的话。
 //
-// It takes care of config messages as well as the revalidation of messages if the config sequence has advanced.
+// 处理配置消息以及如果配置序列已经提前，则重新验证消息。
 func (c *Chain) ordered(msg *orderer.SubmitRequest) (batches [][]*common.Envelope, pending bool, err error) {
+	// 配置序列号通常用于追踪和标识系统配置的更新历史，确保各节点间配置状态的一致性。
 	seq := c.support.Sequence()
 
+	// 方法用于判断给定的信封是否为配置消息。
 	isconfig, err := c.isConfig(msg.Payload)
 	if err != nil {
-		return nil, false, errors.Errorf("bad message: %s", err)
+		return nil, false, errors.Errorf("错误消息: %s", err)
 	}
 
 	if isconfig {
 		// ConfigMsg
 		if msg.LastValidationSeq < seq {
-			c.logger.Warnf("Config message was validated against %d, although current config seq has advanced (%d)", msg.LastValidationSeq, seq)
+			c.logger.Warnf("配置消息已经根据 %d 进行验证，尽管当前配置序列已经提前 (%d)", msg.LastValidationSeq, seq)
+			// 调用`ProcessConfigUpdateMsg`以生成与原始消息相同类型的新配置消息。
 			msg.Payload, _, err = c.support.ProcessConfigMsg(msg.Payload)
 			if err != nil {
 				c.Metrics.ProposalFailures.Add(1)
-				return nil, true, errors.Errorf("bad config message: %s", err)
+				return nil, true, errors.Errorf("错误的配置消息: %s", err)
 			}
 		}
 
+		// 函数用于检查节点驱逐和证书轮换，如果请求中包含这些内容则返回 true，否则返回 false。
 		if c.checkForEvictionNCertRotation(msg.Payload) {
-
+			// 用于标记领导权转移是否正在进行中。
 			if !atomic.CompareAndSwapUint32(&c.leadershipTransferInProgress, 0, 1) {
-				c.logger.Warnf("A reconfiguration transaction is already in progress, ignoring a subsequent transaction")
+				c.logger.Warnf("重新配置事务已经在进行中，忽略后续事务")
 				return
 			}
 
 			go func() {
 				defer atomic.StoreUint32(&c.leadershipTransferInProgress, 0)
-
+				// AbdicationMaxAttempts: 确定了在移除自身参与重新配置的事务中，放弃领导权的最大重试次数。
 				for attempt := 1; attempt <= AbdicationMaxAttempts; attempt++ {
+					// 选择一个最近处于活动状态的节点，并尝试将领导权转移给它。
 					if err := c.Node.abdicateLeadership(); err != nil {
-						// If there is no leader, abort and do not retry.
-						// Return early to prevent re-submission of the transaction
+						// 如果没有领导者，中止并不重试。
+						// 为了防止重新提交事务，提前返回
 						if err == ErrNoLeader || err == ErrChainHalting {
 							return
 						}
 
-						// If the error isn't any of the below, it's a programming error, so panic.
+						// 如果错误不是以下情况之一，则是编程错误，所以触发 panic。
 						if err != ErrNoAvailableLeaderCandidate && err != ErrTimedOutLeaderTransfer {
-							c.logger.Panicf("Programming error, abdicateLeader() returned with an unexpected error: %v", err)
+							c.logger.Panicf("编程错误，abdicateLeader() 返回了意外错误: %v", err)
 						}
 
-						// Else, it's one of the errors above, so we retry.
+						// 否则，是上述错误之一，所以我们重试。
 						continue
 					} else {
-						// Else, abdication succeeded, so we submit the transaction (which forwards to the leader)
+						// 否则，放弃领导权成功，我们提交事务（转发到领导者）
 						if err := c.Submit(msg, 0); err != nil {
-							c.logger.Warnf("Reconfiguration transaction forwarding failed with error: %v", err)
+							c.logger.Warnf("重新配置事务转发失败，错误: %v", err)
 						}
 						return
 					}
 				}
 
-				c.logger.Warnf("Abdication failed too many times consecutively (%d), aborting retries", AbdicationMaxAttempts)
+				c.logger.Warnf("放弃领导权失败次数过多（%d），中止重试", AbdicationMaxAttempts)
 			}()
 			return nil, false, nil
 		}
@@ -1106,7 +1173,7 @@ func (c *Chain) ordered(msg *orderer.SubmitRequest) (batches [][]*common.Envelop
 	}
 	// it is a normal message
 	if msg.LastValidationSeq < seq {
-		c.logger.Warnf("Normal message was validated against %d, although current config seq has advanced (%d)", msg.LastValidationSeq, seq)
+		c.logger.Warnf("普通消息已经根据 %d 进行验证，尽管当前配置序列已经提前 (%d)", msg.LastValidationSeq, seq)
 		if _, err := c.support.ProcessNormalMsg(msg.Payload); err != nil {
 			c.Metrics.ProposalFailures.Add(1)
 			return nil, true, errors.Errorf("bad normal message: %s", err)
@@ -1206,9 +1273,9 @@ func (c *Chain) commitBlock(block *common.Block) {
 	}
 }
 
+// 检测Conf更改
 func (c *Chain) detectConfChange(block *common.Block) *MembershipChanges {
-	// If config is targeting THIS channel, inspect consenter set and
-	// propose raft ConfChange if it adds/removes node.
+	// 如果配置针对此通道，请检查共识者集并在添加/删除节点时提议 Raft ConfChange
 	configMetadata := c.newConfigMetadata(block)
 
 	if configMetadata == nil {
@@ -1218,36 +1285,39 @@ func (c *Chain) detectConfChange(block *common.Block) *MembershipChanges {
 	if configMetadata.Options != nil &&
 		configMetadata.Options.SnapshotIntervalSize != 0 &&
 		configMetadata.Options.SnapshotIntervalSize != c.sizeLimit {
-		c.logger.Infof("Update snapshot interval size to %d bytes (was %d)",
+		c.logger.Infof("将快照间隔大小更新为 %d 字节（之前为 %d）",
 			configMetadata.Options.SnapshotIntervalSize, c.sizeLimit)
 		c.sizeLimit = configMetadata.Options.SnapshotIntervalSize
 	}
 
+	// 函数根据新共识者信息计算成员更新，返回两个切片：一个包含新增共识者，一个包含待移除的共识者。
 	changes, err := ComputeMembershipChanges(c.opts.BlockMetadata, c.opts.Consenters, configMetadata.Consenters)
 	if err != nil {
-		c.logger.Panicf("illegal configuration change detected: %s", err)
+		c.logger.Panicf("检测到非法配置更改: %s", err)
 	}
 
 	if changes.Rotated() {
-		c.logger.Infof("Config block [%d] rotates TLS certificate of node %d", block.Header.Number, changes.RotatedNode)
+		c.logger.Infof("配置区块 [%d] 旋转了节点 %d 的 TLS 证书", block.Header.Number, changes.RotatedNode)
 	}
 
 	return changes
 }
 
+// 用于处理 Raft 日志条目的应用。根据不同类型的日志条目进行相应的处理，包括写入区块、应用配置更改、处理快照等操作
 func (c *Chain) apply(ents []raftpb.Entry) {
 	if len(ents) == 0 {
 		return
 	}
 
 	if ents[0].Index > c.appliedIndex+1 {
-		c.logger.Panicf("first index of committed entry[%d] should <= appliedIndex[%d]+1", ents[0].Index, c.appliedIndex)
+		c.logger.Panicf("已提交条目的第一个索引[%d]应 <= 应用索引[%d]+1", ents[0].Index, c.appliedIndex)
 	}
 
 	var position int
 	for i := range ents {
 		switch ents[i].Type {
 		case raftpb.EntryNormal:
+			// 正常进入
 			if len(ents[i].Data) == 0 {
 				break
 			}
@@ -1255,10 +1325,9 @@ func (c *Chain) apply(ents []raftpb.Entry) {
 			position = i
 			c.accDataSize += uint32(len(ents[i].Data))
 
-			// We need to strictly avoid re-applying normal entries,
-			// otherwise we are writing the same block twice.
+			// 我们需要严格避免重新应用普通条目，否则会写入相同的区块两次。
 			if ents[i].Index <= c.appliedIndex {
-				c.logger.Debugf("Received block with raft index (%d) <= applied index (%d), skip", ents[i].Index, c.appliedIndex)
+				c.logger.Debugf("接收到 Raft 索引为 (%d) <= 应用索引为 (%d) 的区块，跳过", ents[i].Index, c.appliedIndex)
 				break
 			}
 
@@ -1269,7 +1338,7 @@ func (c *Chain) apply(ents []raftpb.Entry) {
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			if err := cc.Unmarshal(ents[i].Data); err != nil {
-				c.logger.Warnf("Failed to unmarshal ConfChange data: %s", err)
+				c.logger.Warnf("无法解析 ConfChange 数据: %s", err)
 				continue
 			}
 
@@ -1281,11 +1350,11 @@ func (c *Chain) apply(ents []raftpb.Entry) {
 			case raftpb.ConfChangeRemoveNode:
 				c.logger.Infof("应用配置更改以删除节点 %d, 通道中的当前节点: %+v", cc.NodeID, c.confState.Nodes)
 			default:
-				c.logger.Panic("Programming error, encountered unsupported raft config change")
+				c.logger.Panic("编程错误，遇到不支持的 Raft 配置更改")
 			}
 
-			// This ConfChange was introduced by a previously committed config block,
-			// we can now unblock submitC to accept envelopes.
+			// 此 ConfChange 是由先前提交的配置区块引入的，
+			// 现在我们可以解除 submitC 的阻塞以接受信封。
 			var configureComm bool
 			if c.confChangeInProgress != nil &&
 				c.confChangeInProgress.NodeID == cc.NodeID &&
@@ -1294,21 +1363,21 @@ func (c *Chain) apply(ents []raftpb.Entry) {
 				configureComm = true
 				c.confChangeInProgress = nil
 				c.configInflight = false
-				// report the new cluster size
+				// 报告新的集群大小
 				c.Metrics.ClusterSize.Set(float64(len(c.opts.BlockMetadata.ConsenterIds)))
 			}
 
+			// 解除 `run` 协程的阻塞，以便它仍然可以消费 Raft 消息
 			shouldHalt := cc.Type == raftpb.ConfChangeRemoveNode && cc.NodeID == c.raftID
-			// unblock `run` go routine so it can still consume Raft messages
 			go func() {
-				if configureComm && !shouldHalt { // no need to configure comm if this node is going to halt
+				if configureComm && !shouldHalt { // 如果此节点将停止，则无需配置通信
 					if err := c.configureComm(); err != nil {
-						c.logger.Panicf("Failed to configure communication: %s", err)
+						c.logger.Panicf("配置通信失败: %s", err)
 					}
 				}
 
 				if shouldHalt {
-					c.logger.Infof("This node is being removed from replica set")
+					c.logger.Infof("此节点正在从副本集中移除")
 					c.halt()
 					return
 				}
@@ -1325,38 +1394,55 @@ func (c *Chain) apply(ents []raftpb.Entry) {
 
 		select {
 		case c.gcC <- &gc{index: c.appliedIndex, state: c.confState, data: ents[position].Data}:
-			c.logger.Infof("Accumulated %d bytes since last snapshot, exceeding size limit (%d bytes), "+
-				"taking snapshot at block [%d] (index: %d), last snapshotted block number is %d, current nodes: %+v",
+			c.logger.Infof("自上次快照以来累积了 %d 字节，超过大小限制 (%d 字节)，"+
+				"在区块 [%d] (索引: %d) 处进行快照，上次快照的区块编号为 %d，当前节点: %+v",
 				c.accDataSize, c.sizeLimit, b.Header.Number, c.appliedIndex, c.lastSnapBlockNum, c.confState.Nodes)
 			c.accDataSize = 0
 			c.lastSnapBlockNum = b.Header.Number
 			c.Metrics.SnapshotBlockNumber.Set(float64(b.Header.Number))
 		default:
-			c.logger.Warnf("Snapshotting is in progress, it is very likely that SnapshotIntervalSize is too small")
+			c.logger.Warnf("快照正在进行中，很可能是因为快照间隔大小设置过小")
 		}
 	}
 }
 
+// gc 函数负责执行垃圾回收任务，不断监听并处理来自 gcC 通道的快照生成请求或 doneC 通道的停止信号。
 func (c *Chain) gc() {
+	// 使用无限循环来持续监听通道事件。
 	for {
+		// 使用 select 语句等待来自两个不同通道的事件。
 		select {
+		// 当从 gcC 通道收到垃圾回收任务（快照请求）时。
 		case g := <-c.gcC:
+			// 调用 Node 的 takeSnapshot 方法，传入快照索引、状态和数据，
+			// 以生成并保存快照，实现对历史数据的整理和内存占用的优化。
 			c.Node.takeSnapshot(g.index, g.state, g.data)
+
+		// 当从 doneC 通道接收到停止信号时。
 		case <-c.doneC:
-			c.logger.Infof("Stop garbage collecting")
+			// 记录日志，表明垃圾回收任务已停止。
+			c.logger.Infof("停止垃圾回收")
+			// 结束循环，退出垃圾回收函数。
 			return
 		}
 	}
 }
 
+// 方法用于判断给定的信封是否为配置消息。
 func (c *Chain) isConfig(env *common.Envelope) (bool, error) {
+	// 从信封中提取通道头信息
 	h, err := protoutil.ChannelHeader(env)
 	if err != nil {
-		c.logger.Errorf("failed to extract channel header from envelope")
+		// 如果提取通道头信息失败，则记录错误并返回 false 和错误信息
+		c.logger.Errorf("从信封中提取通道头失败")
 		return false, err
 	}
 
-	return h.Type == int32(common.HeaderType_CONFIG) || h.Type == int32(common.HeaderType_ORDERER_TRANSACTION), nil
+	// 判断通道头中的消息类型是否为配置消息或订购者事务消息
+	isConfigMsg := h.Type == int32(common.HeaderType_CONFIG) || h.Type == int32(common.HeaderType_ORDERER_TRANSACTION)
+
+	// 返回判断结果和 nil 错误
+	return isConfigMsg, nil
 }
 
 // configureComm 函数用于重新配置通信，例如在网络拓扑变化或节点加入/离开时。
@@ -1429,19 +1515,19 @@ func pemToDER(pemBytes []byte, id uint64, certType string, logger *flogging.Fabr
 	return bl.Bytes, nil
 }
 
-// writeConfigBlock writes configuration blocks into the ledger in
-// addition extracts updates about raft replica set and if there
-// are changes updates cluster membership as well
+// writeConfigBlock 将配置区块写入账本，同时提取有关 Raft 副本集的更新，如果有更改，则更新集群成员资格
 func (c *Chain) writeConfigBlock(block *common.Block, index uint64) {
+	// 一个配置区块，并返回其中包含的配置信封的头类型，
 	hdr, err := ConfigChannelHeader(block)
 	if err != nil {
-		c.logger.Panicf("Failed to get config header type from config block: %s", err)
+		c.logger.Panicf("无法从配置区块中获取配置头类型: %s", err)
 	}
 
 	c.configInflight = false
 
 	switch common.HeaderType(hdr.Type) {
 	case common.HeaderType_CONFIG:
+		// 检测Conf更改, 返回新的的共识配置
 		configMembership := c.detectConfChange(block)
 
 		c.raftMetadataLock.Lock()
@@ -1452,9 +1538,8 @@ func (c *Chain) writeConfigBlock(block *common.Block, index uint64) {
 		}
 		c.raftMetadataLock.Unlock()
 
+		// 写入带有元数据的区块
 		blockMetadataBytes := protoutil.MarshalOrPanic(c.opts.BlockMetadata)
-
-		// write block with metadata
 		c.support.WriteConfigBlock(block, blockMetadataBytes)
 
 		if configMembership == nil {
@@ -1506,34 +1591,36 @@ func (c *Chain) writeConfigBlock(block *common.Block, index uint64) {
 	}
 }
 
-// getInFlightConfChange returns ConfChange in-flight if any.
-// It returns confChangeInProgress if it is not nil. Otherwise
-// it returns ConfChange from the last committed block (might be nil).
+// getInFlightConfChange 返回当前正在进行中的配置变更(ConfChange)，如果有任意一个的话。
+// 如果存在正在处理中的配置变更(confChangeInProgress)，则直接返回它。
+// 否则，从最新提交的区块中尝试获取配置变更信息（该配置变更可能为nil）。
 func (c *Chain) getInFlightConfChange() *raftpb.ConfChange {
+	// 首先检查是否存在正在进行中的配置变更
 	if c.confChangeInProgress != nil {
 		return c.confChangeInProgress
 	}
 
+	// 如果链刚刚启动，即最后一个区块编号为0，表明没有需要故障切换的情况
 	if c.lastBlock.Header.Number == 0 {
-		return nil // nothing to failover just started the chain
+		return nil
 	}
 
+	// 检查最后一个区块是否为配置块，如果不是则无需进行配置变更处理
 	if !protoutil.IsConfigBlock(c.lastBlock) {
 		return nil
 	}
 
-	// extracting current Raft configuration state
+	// 应用一个空的配置变更到Raft节点上，目的是为了获取当前的配置状态
 	confState := c.Node.ApplyConfChange(raftpb.ConfChange{})
 
+	// 比较当前Raft配置状态中的节点数量与区块链元数据中ConsenterIds的数量
 	if len(confState.Nodes) == len(c.opts.BlockMetadata.ConsenterIds) {
-		// Raft configuration change could only add one node or
-		// remove one node at a time, if raft conf state size is
-		// equal to membership stored in block metadata field,
-		// that means everything is in sync and no need to propose
-		// config update.
+		// Raft配置变更每次只能增加或移除一个节点。如果当前Raft配置的节点数
+		// 等于区块元数据中存储的成员数，说明配置已同步，无需提出新的配置更新。
 		return nil
 	}
 
+	// 如果配置不一致，则根据区块元数据和当前Raft配置状态构建一个新的配置变更提议
 	return ConfChange(c.opts.BlockMetadata, confState)
 }
 
@@ -1669,44 +1756,49 @@ func (c *Chain) triggerCatchup(sn *raftpb.Snapshot) {
 	}
 }
 
-// checkForEvictionNCertRotation checks for node eviction and
-// certificate rotation, return true if request includes it
-// otherwise returns false
+// 函数用于检查节点驱逐和证书轮换，如果请求中包含这些内容则返回 true，否则返回 false。
 func (c *Chain) checkForEvictionNCertRotation(env *common.Envelope) bool {
+	// 从信封中提取有效载荷
 	payload, err := protoutil.UnmarshalPayload(env.Payload)
 	if err != nil {
-		c.logger.Warnf("failed to extract payload from config envelope: %s", err)
+		c.logger.Warnf("从配置信封中提取有效载荷失败: %s", err)
 		return false
 	}
 
+	// 解析有效载荷中的配置更新
 	configUpdate, err := configtx.UnmarshalConfigUpdateFromPayload(payload)
 	if err != nil {
-		c.logger.Warnf("could not read config update: %s", err)
+		c.logger.Warnf("无法读取配置更新: %s", err)
 		return false
 	}
 
+	// 从配置更新中提取配置元数据
 	configMeta, err := MetadataFromConfigUpdate(configUpdate)
 	if err != nil || configMeta == nil {
 		c.logger.Warnf("无法读取配置元数据: %s", err)
 		return false
 	}
 
+	// 计算共识成员变更, 不支持一次更新多个共识 consenter 节点
 	membershipUpdates, err := ComputeMembershipChanges(c.opts.BlockMetadata, c.opts.Consenters, configMeta.Consenters)
 	if err != nil {
-		c.logger.Warnf("illegal configuration change detected: %s", err)
+		c.logger.Warnf("检测到非法配置更改: %s", err)
 		return false
 	}
 
+	// 检查是否发生了我们节点的证书轮换
 	if membershipUpdates.RotatedNode == c.raftID {
-		c.logger.Infof("Detected certificate rotation of our node")
+		c.logger.Infof("检测到我们节点的证书轮换")
 		return true
 	}
 
+	// 检查是否发生了我们节点被驱逐出配置
 	if _, exists := membershipUpdates.NewConsenters[c.raftID]; !exists {
-		c.logger.Infof("Detected eviction of ourselves from the configuration")
+		c.logger.Infof("检测到我们节点被驱逐出配置")
 		return true
 	}
 
-	c.logger.Debugf("Node %d is still part of the consenters set", c.raftID)
+	// 节点仍然是共识者集合的一部分
+	c.logger.Debugf("节点 %d 仍然是共识者集合的一部分", c.raftID)
 	return false
 }

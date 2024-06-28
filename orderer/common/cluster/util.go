@@ -116,7 +116,7 @@ func (mp MemberMapping) ServerCertificates() StringSet {
 // StringSet 是一组字符串
 type StringSet map[string]struct{}
 
-// union adds the elements of the given set to the StringSet
+// union 将给定集的元素添加到StringSet
 func (ss StringSet) union(set StringSet) {
 	for k := range set {
 		ss[k] = struct{}{}
@@ -845,20 +845,26 @@ type certificateExpirationCheck struct {
 	alert                            func(string, ...interface{})
 }
 
+// 检查证书过期
 func (exp *certificateExpirationCheck) checkExpiration(currentTime time.Time, channel string) {
+	// 计算证书过期剩余时间
 	timeLeft := exp.expiresAt.Sub(currentTime)
+	// 如果剩余时间大于过期警告阈值，则不进行警告
 	if timeLeft > exp.expirationWarningThreshold {
 		return
 	}
 
+	// 计算距上次警告的时间间隔
 	timeSinceLastWarning := currentTime.Sub(exp.lastWarning)
+	// 如果距上次警告的时间小于最小过期警告间隔，则不进行警告
 	if timeSinceLastWarning < exp.minimumExpirationWarningInterval {
 		return
 	}
 
-	exp.alert("Certificate of %s from %s for channel %s expires in less than %v",
+	// 发出证书即将过期的警告
+	exp.alert("节点 %s 的证书来自 %s，用于通道 %s 的证书将在 %v 后过期",
 		exp.nodeName, exp.endpoint, channel, timeLeft)
-	exp.lastWarning = currentTime
+	exp.lastWarning = currentTime // 更新上次警告时间
 }
 
 // CachePublicKeyComparisons creates CertificateComparator that caches invocations based on input arguments.
