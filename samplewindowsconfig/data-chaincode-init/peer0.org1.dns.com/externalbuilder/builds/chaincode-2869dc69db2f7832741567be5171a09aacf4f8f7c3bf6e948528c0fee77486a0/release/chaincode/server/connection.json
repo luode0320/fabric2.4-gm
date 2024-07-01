@@ -1,0 +1,1 @@
+{"address":"chaincode.server.cn:9999","dial_timeout":"10s","tls_required":false,"client_auth_required":false,"root_cert":"","client_key":"","client_cert":""}
