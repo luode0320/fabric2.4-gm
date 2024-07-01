@@ -26,6 +26,4 @@ TESTS*.xml
 .vagrant/
 .vendor/
 .vscode
-/samplewindowsconfig/channel-artifacts/
 /samplewindowsconfig/data/
-/samplewindowsconfig/crypto-config/
