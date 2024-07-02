@@ -22,7 +22,7 @@ type Disseminator struct {
 	metadata []byte          // 集群元数据，将被附加到消息中
 }
 
-// SendConsensus 方法用于发送共识请求。
+// SendConsensus 方法用于发送共识请求。最终会调用到rpc.SendConsensus发送
 // 在发送之前，它会检查是否已经向目标节点发送过元数据。
 // 如果尚未发送，并且存在元数据，它会将元数据附加到消息的Metadata字段。
 // 然后，使用RPC接口的SendConsensus方法发送更新后的消息。

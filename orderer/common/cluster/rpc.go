@@ -129,7 +129,7 @@ func (s *RPC) SendSubmit(destination uint64, request *orderer.SubmitRequest, rep
 		defer s.submitSent(time.Now(), destination, request)
 	}
 
-	// 获取或创建与目标节点的流,这里是发送请求的核心位置
+	// 获取或创建与目标节点(领导者)的流,这里是发送请求的核心位置
 	stream, err := s.getOrCreateStream(destination, SubmitOperation)
 	if err != nil {
 		return err

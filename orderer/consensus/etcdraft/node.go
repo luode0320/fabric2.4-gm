@@ -213,7 +213,7 @@ func (n *node) run(campaign bool) {
 
 			// 跳过空的应用
 			if len(rd.CommittedEntries) != 0 || rd.SoftState != nil {
-				// 将应用的数据发送到 n.chain.applyC 通道, 节点接受到来自raft的其他节点的消息
+				// 将应用的数据发送到 n.chain.applyC 通道, 已提交的条目 + 当前节点的状态
 				n.chain.applyC <- apply{rd.CommittedEntries, rd.SoftState}
 			}
 
@@ -232,15 +232,8 @@ func (n *node) run(campaign bool) {
 			// 已经处理完当前的 Ready 事件，可以继续处理下一个 Ready 事件
 			n.Advance()
 
-			// TODO(jay_guo) leader可以复制并行地写入磁盘
-			// 给追随者和他们写到他们的磁盘。在论文中检查10.2.1
-			// 将 Ready() 中的消息发送给其他节点。rd.Messages 是一个消息列表，其中包含了需要发送给其他节点的消息。这些消息可能包括附加日志条目、请求投票等
-			// Messages: 消息指定在将条目提交到稳定存储之后要发送的出站消息。
-			// 		Raft 算法的核心之一是通过日志复制来确保所有节点上的日志保持一致。
-			// 		当领导者节点接收到客户端的请求后，会将该请求转化为日志条目并发送给其他节点，其他节点收到日志条目后会复制这些日志并在本地应用，从而保持所有节点上的日志一致。
-			//
-			// 		在 Raft 中，节点通过相互通信来进行领导者选举。
-			//		当节点发现当前的领导者不可用时，会发起选举过程，节点之间会相互投票并选举出新的领导者。节点需要发送请求投票的消息给其他节点来参与选举过程。
+			// 将 Ready() 中的消息发送给其他节点。如果本节点是leader节点, 就会发送给其他所有跟随着
+			// 如果本节点是跟随着, 就会发送给leader节点
 			n.send(rd.Messages)
 
 		case <-n.chain.haltC:

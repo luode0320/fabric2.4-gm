@@ -814,7 +814,7 @@ func (c *Chain) run() {
 	// 初始化cancelProp为一个空操作函数，避免未定义错误
 	cancelProp = func() {}
 
-	// 定义角色转变函数
+	// 定义领导者转变函数
 	becomeLeader := func() (chan<- *common.Block, context.CancelFunc) {
 		// 设置当前节点为领导者状态的监控指标
 		c.Metrics.IsLeader.Set(1)
@@ -893,7 +893,7 @@ func (c *Chain) run() {
 
 	for {
 		select {
-		// 接受raft消息
+		// 接受本地的raft消息, 此通道消息是由本地发送而来的, 本地必须是领导节点才会处理, 否则会跳过
 		case s := <-submitC:
 			// 检查是否有空消息，这可能是由`WaitReady`调用触发的轮询
 			if s == nil {
@@ -1255,7 +1255,7 @@ func (c *Chain) propose(propC chan<- *common.Block, bc *blockCreator, batches ..
 	for _, batch := range batches {
 		// 结构体中的 createNextBlock 方法用于根据给定的一组交易信封（Envelope）创建下一个区块链块。
 		b := bc.createNextBlock(batch)
-		c.logger.Infof("已创建的块高度 [%d], 准备参与共识, 是否有正在传输中的块(如果有需要等待): %d 个", b.Header.Number, c.blockInflight)
+		c.logger.Infof("本节点为领导者节点, 已创建的块高度 [%d], 准备推送共识同步到跟随着, 是否有正在传输中的块(如果有需要等待): %d 个", b.Header.Number, c.blockInflight)
 
 		select {
 		case propC <- b:
