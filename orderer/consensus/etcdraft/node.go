@@ -64,13 +64,13 @@ type node struct {
 	raft.Node
 }
 
-// start 开始 Raft 节点的运行
+// 开始 Raft 节点的运行, 这里有接受其他节点消息的处理
 // fresh: 用于标记这是不是一个全新的 raft 节点，初始启动时使用, 由是否存在共识日志文件判断
 // join: 判断是否为全新启动或加入现有通道
 func (n *node) start(fresh, join bool) {
 	// 根据共识者的ID列表创建RaftPeers
 	raftNodes := RaftNodes(n.metadata.ConsenterIds)
-	n.logger.Debugf("正在启动Raft节点：节点数：%v", len(raftNodes))
+	n.logger.Debugf("正在启动 Raft 节点：节点数：%v", len(raftNodes))
 
 	// 是否发起竞选成为领导者
 	var campaign bool
@@ -79,9 +79,9 @@ func (n *node) start(fresh, join bool) {
 		if join {
 			// 若加入现有通道，则不使用初始的raft列表
 			raftNodes = nil
-			n.logger.Info("正在启动Raft节点以加入现有通道")
+			n.logger.Info("正在启动 Raft 节点以加入现有通道")
 		} else {
-			n.logger.Info("正在启动Raft节点作为新通道的一部分")
+			n.logger.Info("正在启动 Raft 节点作为新通道的一部分")
 
 			// 为了决定哪个节点应该发起竞选（成为第一个领导者），计算：
 			// hash(通道ID) % 群集大小 + 1，选择该ID的节点作为竞选节点
@@ -113,7 +113,7 @@ func (n *node) start(fresh, join bool) {
 		n.Node = raft.RestartNode(n.config)
 	}
 
-	// 运行raft, 持久化raft共识的数据, 和发送消息给raft的其他节点
+	// 运行raft, 持久化raft共识的数据, 和发送/接受消息给raft的其他节点
 	go n.run(campaign)
 }
 
@@ -170,6 +170,8 @@ func (n *node) run(campaign bool) {
 			// 滴答将节点的内部逻辑时钟增加一个滴答心跳。选举超时和心跳超时以滴答为单位。
 			n.Tick()                 // 执行 Raft 的滴答操作
 			n.tracker.Check(&status) // 检查 Raft 的状态. 更新活跃节点的本地内存映射
+
+		// 读取raft共识消息, 返回当前时间点状态的通道
 		case rd := <-n.Ready():
 			// Ready返回返回当前时间点状态的通道
 			// 当从 `n.Ready()` 通道接收到数据时执行以下操作：
@@ -227,7 +229,7 @@ func (n *node) run(campaign bool) {
 				}
 			}
 
-			// 将当前节点的状态推进到 Ready() 中的最新状态。这样可以通知 Raft 模块当前节点已经处理了 Ready() 中的数据
+			// 已经处理完当前的 Ready 事件，可以继续处理下一个 Ready 事件
 			n.Advance()
 
 			// TODO(jay_guo) leader可以复制并行地写入磁盘

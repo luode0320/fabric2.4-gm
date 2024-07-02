@@ -27,7 +27,7 @@ func MarshalOrPanic(pm proto.Message) []byte {
 	return data
 }
 
-// Marshal serializes a protobuf message.
+// Marshal 序列化protobuf消息。
 func Marshal(pb proto.Message) ([]byte, error) {
 	return proto.Marshal(pb)
 }
