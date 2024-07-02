@@ -64,38 +64,52 @@ type StreamMetrics struct {
 	MessagesReceived  metrics.Counter
 }
 
-// StreamServerInterceptor 函数返回一个用于拦截流式RPC的GRPC服务器拦截器。
+// StreamServerInterceptor 函数构造并返回一个针对gRPC流式RPC的服务器拦截器。
+// 该拦截器的主要功能是收集和记录流式RPC的度量数据，如请求数量、消息收发统计、请求处理耗时及请求完成状态等。
 //
 // 参数：
-//   - sm: StreamMetrics类型，表示流式RPC的度量指标。
+//   - sm (*StreamMetrics): 一个指向StreamMetrics结构体的指针，用于存储流式RPC的性能度量信息。
 //
 // 返回值：
-//   - grpc.StreamServerInterceptor: 表示流式RPC的服务器拦截器。
+//   - grpc.StreamServerInterceptor: 返回一个gRPC流式RPC服务器拦截器，该拦截器会在每个流式调用前后执行，用于度量和记录数据。
 func StreamServerInterceptor(sm *StreamMetrics) grpc.StreamServerInterceptor {
+	// 定义拦截器的具体逻辑
 	return func(svc interface{}, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		// 确保sm变量在闭包中可用（此处实际是冗余操作，因为sm已经在闭包的外部作用域中）
 		sm := sm
+
+		// 解析gRPC服务和方法名称
 		service, method := serviceMethod(info.FullMethod)
+
+		// 增加收到的请求计数
 		sm.RequestsReceived.With("service", service, "method", method).Add(1)
 
-		// 创建一个包装的 ServerStream
+		// 包装原始的ServerStream为一个带度量统计的serverStream
 		wrappedStream := &serverStream{
-			ServerStream:     stream,
-			messagesSent:     sm.MessagesSent.With("service", service, "method", method),
-			messagesReceived: sm.MessagesReceived.With("service", service, "method", method),
+			ServerStream:     stream,                                                         // 保留原始的ServerStream接口
+			messagesSent:     sm.MessagesSent.With("service", service, "method", method),     // 发送消息计数器
+			messagesReceived: sm.MessagesReceived.With("service", service, "method", method), // 接收消息计数器
 		}
 
+		// 记录请求开始时间
 		startTime := time.Now()
+
+		// 调用原始的流处理器处理请求
 		err := handler(svc, wrappedStream)
+
+		// 从错误中提取gRPC状态码，如果转换失败则使用默认值
 		st, _ := status.FromError(err)
+
+		// 计算请求处理的总耗时
 		duration := time.Since(startTime)
 
-		// 记录请求的持续时间
-		sm.RequestDuration.With(
-			"service", service, "method", method, "code", st.Code().String(),
-		).Observe(duration.Seconds())
-		// 记录已完成的请求
+		// 记录请求处理的持续时间
+		sm.RequestDuration.With("service", service, "method", method, "code", st.Code().String()).Observe(duration.Seconds())
+
+		// 记录请求完成计数，包括成功或失败的状态
 		sm.RequestsCompleted.With("service", service, "method", method, "code", st.Code().String()).Add(1)
 
+		// 返回处理结果，保持错误传递
 		return err
 	}
 }
