@@ -62,34 +62,42 @@ type Handler struct {
 	Metrics *Metrics
 }
 
-// Handle 从Broadcast流读取请求，处理请求，并将响应返回到流
+// Handle 方法从gRPC的Broadcast流中读取客户端的请求，对其进行处理，并将处理结果通过流返回给客户端。
 func (bh *Handler) Handle(srv ab.AtomicBroadcast_BroadcastServer) error {
-	// 从接收到的广播内容上下文中，解析出发送信息的远端地址
+	// 从gRPC上下文中提取发起广播请求的客户端地址
 	addr := util.ExtractRemoteAddress(srv.Context())
-	logger.Debugf("开始 %s 的新广播循环", addr)
+	logger.Debugf("开始处理来自 %s 的新广播循环", addr)
+
+	// 进入无限循环以持续监听和处理客户端的请求
 	for {
-		// 循环接受来自客户端gprc的请求, 如果没有会阻塞线程
+		// 阻塞等待接收客户端通过gRPC流发送的下一个消息，如果没有消息则会在此处等待
 		msg, err := srv.Recv()
 		if err == io.EOF {
-			logger.Debugf("收到来自 %s 的EOF，挂断", addr)
+			// 若收到EOF（文件结束符），表示客户端已关闭连接，优雅地结束处理循环
+			logger.Debugf("收到来自 %s 的连接关闭信号，结束处理", addr)
 			return nil
 		}
 		if err != nil {
-			logger.Warningf("从流读取时出错 %s: %s", addr, err)
+			// 如果在接收过程中出现其他错误，记录警告信息并返回错误，中断处理
+			logger.Warningf("从客户端 %s 接收消息时发生错误: %s", addr, err)
 			return err
 		}
 
-		// 验证单个消息，并将其放入共识队列中进行处理。
+		// 对接收到的单个消息进行验证，并将其提交到共识队列中进行后续处理
 		resp := bh.ProcessMessage(msg, addr)
+		// 尝试将处理结果通过gRPC流发送回客户端
 		err = srv.Send(resp)
 		if resp.Status != cb.Status_SUCCESS {
+			// 如果处理结果不是成功状态，直接返回错误，不再继续接收后续消息
 			return err
 		}
 
 		if err != nil {
-			logger.Warningf("发送到 %s 时出错: %s", addr, err)
+			// 如果发送响应给客户端时出现错误，记录警告信息并返回错误
+			logger.Warningf("向客户端 %s 发送响应时出错: %s", addr, err)
 			return err
 		}
+		// 循环继续，等待接收下一个请求
 	}
 }
 
