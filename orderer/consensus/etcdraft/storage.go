@@ -298,7 +298,7 @@ func createOrReadWAL(lg *flogging.FabricLogger, walDir string, snapshot *raftpb.
 
 // Snapshot 返回存储在内存中的最新快照
 func (rs *RaftStorage) Snapshot() raftpb.Snapshot {
-	sn, _ := rs.ram.Snapshot() // Snapshot always returns nil error
+	sn, _ := rs.ram.Snapshot() // 快照总是返回零错误。
 	return sn
 }
 
@@ -315,10 +315,10 @@ func (rs *RaftStorage) Store(entries []raftpb.Entry, hardstate raftpb.HardState,
 
 		if err := rs.ram.ApplySnapshot(snapshot); err != nil {
 			if err == raft.ErrSnapOutOfDate {
-				rs.lg.Warnf("Attempted to apply out-of-date snapshot at Term %d and Index %d",
+				rs.lg.Warnf("尝试在任期 %d 和索引 %d 处应用过期快照",
 					snapshot.Metadata.Term, snapshot.Metadata.Index)
 			} else {
-				rs.lg.Fatalf("Unexpected programming error: %s", err)
+				rs.lg.Fatalf("意外的编程错误: %s", err)
 			}
 		}
 	}

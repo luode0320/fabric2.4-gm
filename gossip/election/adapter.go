@@ -53,7 +53,7 @@ type gossip interface {
 	// can be used to send a reply back to the sender
 	Accept(acceptor common.MessageAcceptor, passThrough bool) (<-chan *proto.GossipMessage, <-chan protoext.ReceivedMessage)
 
-	// Gossip sends a message to other peers to the network
+	// Gossip 方法用于向网络中的其他对等节点发送消息
 	Gossip(msg *proto.GossipMessage)
 
 	// IsInMyOrg checks whether a network member is in this peer's org

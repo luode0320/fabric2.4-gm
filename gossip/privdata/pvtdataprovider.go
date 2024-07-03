@@ -173,9 +173,8 @@ type PvtdataProvider struct {
 	sleeper sleeper
 }
 
-// RetrievePvtdata is passed a list of private data items from a block,
-// it determines which private data items this peer is eligible for, and then
-// retrieves the private data from local cache, local transient store, or a remote peer.
+// RetrievePvtdata 方法接收一个区块中的私有数据项列表，确定此节点有资格获取哪些私有数据项，
+// 然后从本地缓存、本地暂存区或远程节点检索私有数据。
 func (pdp *PvtdataProvider) RetrievePvtdata(pvtdataToRetrieve []*ledger.TxPvtdataInfo) (*RetrievedPvtdata, error) {
 	retrievedPvtdata := &RetrievedPvtdata{
 		transientStore:          pdp.transientStore,
@@ -185,7 +184,9 @@ func (pdp *PvtdataProvider) RetrievePvtdata(pvtdataToRetrieve []*ledger.TxPvtdat
 		transientBlockRetention: pdp.transientBlockRetention,
 	}
 
+	// 开始计时，记录列出缺失私有数据所需时间
 	listMissingStart := time.Now()
+	// 初始化私有数据资格计算器
 	eligibilityComputer := &eligibilityComputer{
 		logger:                  pdp.logger,
 		storePvtdataOfInvalidTx: pdp.storePvtdataOfInvalidTx,
@@ -194,75 +195,86 @@ func (pdp *PvtdataProvider) RetrievePvtdata(pvtdataToRetrieve []*ledger.TxPvtdat
 		idDeserializerFactory:   pdp.idDeserializerFactory,
 	}
 
+	// 计算节点有资格获取哪些私有数据
 	pvtdataRetrievalInfo, err := eligibilityComputer.computeEligibility(pdp.mspID, pvtdataToRetrieve)
 	if err != nil {
 		return nil, err
 	}
+	// 记录列出缺失私有数据所需时间
 	pdp.listMissingPrivateDataDurationHistogram.Observe(time.Since(listMissingStart).Seconds())
 
+	// 初始化按键分组的读写集
 	pvtdata := make(rwsetByKeys)
 
-	// If there is no private data to retrieve for the block, skip all population attempts and return
+	// 如果区块中没有需要检索的私有数据，直接返回
 	if len(pvtdataRetrievalInfo.remainingEligibleMissingKeys) == 0 {
-		pdp.logger.Debugf("No eligible collection private write sets to fetch for block [%d]", pdp.blockNum)
+		pdp.logger.Debugf("对于块 [%d]，没有符合条件的集合私有写入集需要获取", pdp.blockNum)
 		retrievedPvtdata.pvtdataRetrievalInfo = pvtdataRetrievalInfo
 		retrievedPvtdata.blockPvtdata = pdp.prepareBlockPvtdata(pvtdata, pvtdataRetrievalInfo)
 		return retrievedPvtdata, nil
 	}
 
+	// 初始化统计信息
 	fetchStats := &fetchStats{}
 
+	// 记录需要检索的总私有数据数量
 	totalEligibleMissingKeysToRetrieve := len(pvtdataRetrievalInfo.remainingEligibleMissingKeys)
 
-	// POPULATE FROM CACHE
+	// 从本地缓存中检索
 	pdp.populateFromCache(pvtdata, pvtdataRetrievalInfo, pvtdataToRetrieve)
 	fetchStats.fromLocalCache = totalEligibleMissingKeysToRetrieve - len(pvtdataRetrievalInfo.remainingEligibleMissingKeys)
 
+	// 如果所有私有数据已从缓存中检索完毕，直接返回
 	if len(pvtdataRetrievalInfo.remainingEligibleMissingKeys) == 0 {
-		pdp.logger.Infof("Successfully fetched all %d eligible collection private write sets for block [%d] %s", totalEligibleMissingKeysToRetrieve, pdp.blockNum, fetchStats)
+		pdp.logger.Infof("成功从本地缓存获取块 [%d] 的所有 %d 个符合条件的集合私有写入集 %s", totalEligibleMissingKeysToRetrieve, pdp.blockNum, fetchStats)
 		retrievedPvtdata.pvtdataRetrievalInfo = pvtdataRetrievalInfo
 		retrievedPvtdata.blockPvtdata = pdp.prepareBlockPvtdata(pvtdata, pvtdataRetrievalInfo)
 		return retrievedPvtdata, nil
 	}
 
-	// POPULATE FROM TRANSIENT STORE
+	// 从本地暂存区检索
 	numRemainingToFetch := len(pvtdataRetrievalInfo.remainingEligibleMissingKeys)
 	pdp.populateFromTransientStore(pvtdata, pvtdataRetrievalInfo)
 	fetchStats.fromTransientStore = numRemainingToFetch - len(pvtdataRetrievalInfo.remainingEligibleMissingKeys)
 
+	// 如果所有私有数据已从暂存区检索完毕，直接返回
 	if len(pvtdataRetrievalInfo.remainingEligibleMissingKeys) == 0 {
-		pdp.logger.Infof("Successfully fetched all %d eligible collection private write sets for block [%d] %s", totalEligibleMissingKeysToRetrieve, pdp.blockNum, fetchStats)
+		pdp.logger.Infof("成功从本地暂存区获取块 [%d] 的所有 %d 个符合条件的集合私有写入集 %s", totalEligibleMissingKeysToRetrieve, pdp.blockNum, fetchStats)
 		retrievedPvtdata.pvtdataRetrievalInfo = pvtdataRetrievalInfo
 		retrievedPvtdata.blockPvtdata = pdp.prepareBlockPvtdata(pvtdata, pvtdataRetrievalInfo)
 		return retrievedPvtdata, nil
 	}
 
-	// POPULATE FROM REMOTE PEERS
+	// 从远程节点检索
 	numRemainingToFetch = len(pvtdataRetrievalInfo.remainingEligibleMissingKeys)
 	retryThresh := pdp.pullRetryThreshold
-	pdp.logger.Debugf("Could not find all collection private write sets in local peer transient store for block [%d]", pdp.blockNum)
-	pdp.logger.Debugf("Fetching %d collection private write sets from remote peers for a maximum duration of %s", len(pvtdataRetrievalInfo.remainingEligibleMissingKeys), retryThresh)
+	pdp.logger.Debugf("在本地节点的暂存区中找不到块 [%d] 的所有集合私有写入集", pdp.blockNum)
+	pdp.logger.Debugf("从远程节点获取 %d 个集合私有写入集，最大持续时间为 %s", len(pvtdataRetrievalInfo.remainingEligibleMissingKeys), retryThresh)
 	startPull := time.Now()
 	for len(pvtdataRetrievalInfo.remainingEligibleMissingKeys) > 0 && time.Since(startPull) < retryThresh {
 		if needToRetry := pdp.populateFromRemotePeers(pvtdata, pvtdataRetrievalInfo); !needToRetry {
 			break
 		}
-		// If there are still missing keys, sleep before retry
+		// 如果仍有缺失的键，重试前休眠
 		pdp.sleeper.Sleep(pullRetrySleepInterval)
 	}
-	elapsedPull := int64(time.Since(startPull) / time.Millisecond) // duration in ms
+	// 计算从远程节点检索私有数据所需时间
+	elapsedPull := int64(time.Since(startPull) / time.Millisecond) // 持续时间，单位毫秒
 	pdp.fetchDurationHistogram.Observe(time.Since(startPull).Seconds())
 
+	// 更新统计信息
 	fetchStats.fromRemotePeer = numRemainingToFetch - len(pvtdataRetrievalInfo.remainingEligibleMissingKeys)
 
+	// 如果所有私有数据已从远程节点检索完毕
 	if len(pvtdataRetrievalInfo.remainingEligibleMissingKeys) == 0 {
-		pdp.logger.Debugf("Fetched all missing collection private write sets from remote peers for block [%d] (%dms)", pdp.blockNum, elapsedPull)
-		pdp.logger.Infof("Successfully fetched all %d eligible collection private write sets for block [%d] %s", totalEligibleMissingKeysToRetrieve, pdp.blockNum, fetchStats)
+		pdp.logger.Debugf("从远程节点获取块 [%d] 的所有缺失集合私有写入集 (%dms)", pdp.blockNum, elapsedPull)
+		pdp.logger.Infof("成功获取块 [%d] 的所有 %d 个符合条件的集合私有写入集 %s", totalEligibleMissingKeysToRetrieve, pdp.blockNum, fetchStats)
 	} else {
 		pdp.logger.Warningf("无法获取块 [%d] %s 的所有 %d 个符合条件的集合专用写入集. 将提交缺少专用写集的块:[%v]",
 			pdp.blockNum, fetchStats, totalEligibleMissingKeysToRetrieve, pvtdataRetrievalInfo.remainingEligibleMissingKeys)
 	}
 
+	// 准备返回的数据结构
 	retrievedPvtdata.pvtdataRetrievalInfo = pvtdataRetrievalInfo
 	retrievedPvtdata.blockPvtdata = pdp.prepareBlockPvtdata(pvtdata, pvtdataRetrievalInfo)
 	return retrievedPvtdata, nil

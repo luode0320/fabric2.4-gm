@@ -59,7 +59,7 @@ type GossipServiceAdapter interface {
 	// AddPayload 方法将新的payload（区块）添加到状态中。根据参数设置，该方法可能会阻塞直到区块被添加到payloads缓冲区中，或者在缓冲区满时丢弃区块。 添加完成会被保存到账本
 	AddPayload(chainID string, payload *gossip.Payload) error
 
-	// Gossip the message across the peers
+	// Gossip 同行之间的消息
 	Gossip(msg *gossip.GossipMessage)
 }
 

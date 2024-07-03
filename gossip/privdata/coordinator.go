@@ -147,7 +147,9 @@ func NewCoordinator(mspID string, support Support, store *transientstore.Store, 
 	}
 }
 
-// StoreBlock 方法负责将包含私有数据的区块存储到分类账中，涉及验证、私有数据检索与存储等关键步骤。
+// StoreBlock 方法负责将区块和私有数据存储到分类账中，涉及验证、私有数据检索与存储等关键步骤。
+// block: 上链数据
+// privateDataSets: 私有数据, 可以为空
 func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDataCollections) error {
 	// 验证区块数据是否存在
 	if block.Data == nil {
@@ -183,7 +185,7 @@ func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDa
 		MissingPvtData: make(ledger.TxMissingPvtData),
 	}
 
-	// 检查私有数据信息是否已存在于分类账中
+	// 如果分类帐具有有关给定块号的pvtdata信息，则返回true。
 	exist, err := c.DoesPvtDataInfoExistInLedger(block.Header.Number)
 	if err != nil {
 		return err
@@ -225,8 +227,7 @@ func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDa
 		return err
 	}
 
-	// 检索私有数据
-	// RetrievePvtdata 方法首先检查此节点的资格，然后从缓存、临时存储或远程节点检索私有数据。
+	// 检索私有数据,方法首先检查此节点的资格，然后从缓存、临时存储或远程节点检索私有数据。
 	retrievedPvtdata, err := pdp.RetrievePvtdata(pvtdataToRetrieve)
 	if err != nil {
 		c.logger.Warningf("检索私有数据失败: %s", err)
@@ -307,45 +308,59 @@ func (c *coordinator) GetPvtDataAndBlockByNum(seqNum uint64, peerAuthInfo protou
 	return blockAndPvtData.Block, seqs2Namespaces.asPrivateData(), nil
 }
 
-// getTxPvtdataInfoFromBlock parses the block transactions and returns the list of private data items in the block.
-// Note that this peer's eligibility for the private data is not checked here.
+// 方法解析区块中的交易，返回区块中的私有数据项列表。
+// 注意，这里并不检查此节点是否有资格获取这些私有数据。
 func (c *coordinator) getTxPvtdataInfoFromBlock(block *common.Block) ([]*ledger.TxPvtdataInfo, error) {
-	txPvtdataItemsFromBlock := []*ledger.TxPvtdataInfo{}
+	txPvtdataItemsFromBlock := []*ledger.TxPvtdataInfo{} // 初始化私有数据项列表
 
+	// 检查区块元数据是否存在且包含交易过滤位图
 	if block.Metadata == nil || len(block.Metadata.Metadata) <= int(common.BlockMetadataIndex_TRANSACTIONS_FILTER) {
-		return nil, errors.New("Block.Metadata is nil or Block.Metadata lacks a Tx filter bitmap")
+		return nil, errors.New("区块元数据不存在或缺少交易 bitmap 过滤位图")
 	}
+	// 解析交易过滤位图
 	txsFilter := txValidationFlags(block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER])
 	data := block.Data.Data
+	// 确保交易数据大小与过滤位图大小一致
 	if len(txsFilter) != len(block.Data.Data) {
-		return nil, errors.Errorf("block data size(%d) is different from Tx filter size(%d)", len(block.Data.Data), len(txsFilter))
+		return nil, errors.Errorf("区块数据大小(%d)与交易过滤位图大小(%d)不匹配", len(block.Data.Data), len(txsFilter))
 	}
 
+	// 遍历区块中的所有交易
 	for seqInBlock, txEnvBytes := range data {
+		// 标记交易是否无效
 		invalid := txsFilter[seqInBlock] != uint8(peer.TxValidationCode_VALID)
+		// 从交易字节中获取交易信息
 		txInfo, err := getTxInfoFromTransactionBytes(txEnvBytes)
 		if err != nil {
+			// 若获取交易信息失败，跳过此交易
 			continue
 		}
 
+		// 初始化集合私有数据信息列表
 		colPvtdataInfo := []*ledger.CollectionPvtdataInfo{}
+		// 遍历交易的命名空间读写集
 		for _, ns := range txInfo.txRWSet.NsRwSets {
+			// 遍历命名空间下的所有哈希化集合读写集
 			for _, hashedCollection := range ns.CollHashedRwSets {
 				// skip if no writes
 				if !containsWrites(txInfo.txID, ns.NameSpace, hashedCollection) {
+					// 如果集合中没有写操作，跳过
 					continue
 				}
+				// 构建集合筛选标准
 				cc := privdata.CollectionCriteria{
 					Channel:    txInfo.channelID,
 					Namespace:  ns.NameSpace,
 					Collection: hashedCollection.CollectionName,
 				}
 
+				// 从集合存储中检索集合配置
 				colConfig, err := c.CollectionStore.RetrieveCollectionConfig(cc)
 				if err != nil {
-					c.logger.Warningf("Failed to retrieve collection config for collection criteria [%#v]: %s", cc, err)
+					c.logger.Warningf("未能检索集合配置，集合筛选标准：%#v，错误：%s", cc, err)
 					return nil, err
 				}
+				// 创建集合私有数据信息
 				col := &ledger.CollectionPvtdataInfo{
 					Namespace:        ns.NameSpace,
 					Collection:       hashedCollection.CollectionName,
@@ -353,18 +368,22 @@ func (c *coordinator) getTxPvtdataInfoFromBlock(block *common.Block) ([]*ledger.
 					CollectionConfig: colConfig,
 					Endorsers:        txInfo.endorsements,
 				}
+				// 添加集合私有数据信息到列表
 				colPvtdataInfo = append(colPvtdataInfo, col)
 			}
 		}
+		// 创建交易私有数据信息
 		txPvtdataToRetrieve := &ledger.TxPvtdataInfo{
 			TxID:                  txInfo.txID,
 			Invalid:               invalid,
 			SeqInBlock:            uint64(seqInBlock),
 			CollectionPvtdataInfo: colPvtdataInfo,
 		}
+		// 添加交易私有数据信息到列表
 		txPvtdataItemsFromBlock = append(txPvtdataItemsFromBlock, txPvtdataToRetrieve)
 	}
 
+	// 返回私有数据项列表
 	return txPvtdataItemsFromBlock, nil
 }
 

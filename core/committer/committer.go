@@ -30,7 +30,7 @@ import (
 // change
 type Committer interface {
 
-	// CommitLegacy block and private data into the ledger
+	// CommitLegacy 将数据和私有数据存储到分类帐中
 	CommitLegacy(blockAndPvtData *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error
 
 	// GetPvtDataAndBlockByNum retrieves block with private data with given
@@ -45,8 +45,7 @@ type Committer interface {
 	// Get recent block sequence number
 	LedgerHeight() (uint64, error)
 
-	// DoesPvtDataInfoExistInLedger returns true if the ledger has pvtdata info
-	// about a given block number.
+	// DoesPvtDataInfoExistInLedger 如果分类帐具有有关给定块号的pvtdata信息，则返回true。
 	DoesPvtDataInfoExistInLedger(blockNum uint64) (bool, error)
 
 	// Gets blocks with sequence numbers provided in the slice

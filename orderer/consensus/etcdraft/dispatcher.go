@@ -16,10 +16,10 @@ import (
 
 // MessageReceiver receives messages
 type MessageReceiver interface {
-	// Consensus passes the given ConsensusRequest message to the MessageReceiver
+	// Consensus 将给定的ConsensusRequest消息传递给MessageReceiver
 	Consensus(req *orderer.ConsensusRequest, sender uint64) error
 
-	// Submit passes the given SubmitRequest message to the MessageReceiver
+	// Submit 将给定的SubmitRequest消息传递给MessageReceiver
 	Submit(req *orderer.SubmitRequest, sender uint64) error
 }
 

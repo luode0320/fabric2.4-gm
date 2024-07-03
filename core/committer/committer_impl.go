@@ -32,6 +32,7 @@ type PeerLedgerSupport interface {
 
 	GetBlockchainInfo() (*common.BlockchainInfo, error)
 
+	// DoesPvtDataInfoExist 如果分类帐具有有关给定块号的pvtdata信息，则返回true。
 	DoesPvtDataInfoExist(blockNum uint64) (bool, error)
 
 	GetBlockByNumber(blockNumber uint64) (*common.Block, error)
@@ -56,9 +57,9 @@ func NewLedgerCommitter(ledger PeerLedgerSupport) *LedgerCommitter {
 	return &LedgerCommitter{PeerLedgerSupport: ledger}
 }
 
-// CommitLegacy commits blocks atomically with private data
+// CommitLegacy 使用私有数据以原子方式提交块
 func (lc *LedgerCommitter) CommitLegacy(blockAndPvtData *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error {
-	// Committing new block
+	// 正在提交新块
 	if err := lc.PeerLedgerSupport.CommitLegacy(blockAndPvtData, commitOpts); err != nil {
 		return err
 	}
@@ -82,8 +83,7 @@ func (lc *LedgerCommitter) LedgerHeight() (uint64, error) {
 	return info.Height, nil
 }
 
-// DoesPvtDataInfoExistInLedger returns true if the ledger has pvtdata info
-// about a given block number.
+// DoesPvtDataInfoExistInLedger 如果分类帐具有有关给定块号的pvtdata信息，则返回true。
 func (lc *LedgerCommitter) DoesPvtDataInfoExistInLedger(blockNum uint64) (bool, error) {
 	return lc.DoesPvtDataInfoExist(blockNum)
 }

@@ -137,7 +137,7 @@ type GossipStateProviderImpl struct {
 
 	mediator *ServicesMediator
 
-	// Queue of payloads which wasn't acquired yet
+	// 尚未获取的有效载荷队列
 	payloads PayloadsBuffer
 
 	ledger ledgerResources
@@ -236,8 +236,7 @@ func NewGossipStateProvider(
 		mediator: services,
 		// Chain ID
 		chainID: chainID,
-		// Create a queue for payloads, wrapped in a metrics buffer
-		payloads: &metricsBuffer{
+		payloads: &metricsBuffer{ // 为有效负载创建一个队列，包装在度量缓冲区中
 			PayloadsBuffer: NewPayloadsBuffer(height),
 			sizeMetrics:    stateMetrics.PayloadBufferSize,
 			chainID:        chainID,
@@ -540,11 +539,9 @@ func (s *GossipStateProviderImpl) Stop() {
 func (s *GossipStateProviderImpl) deliverPayloads() {
 	for {
 		select {
-		// 等待新区块（payloads）准备好的通知
-		case <-s.payloads.Ready():
+		case <-s.payloads.Ready(): // 等待新区块（payloads）准备好的通知
 			s.logger.Debugf("[%s] 准备将payloads（区块）转移至账本，下一个区块编号为 [%d]", s.chainID, s.payloads.Next())
-			// 收集并处理所有待处理的payloads
-			for payload := s.payloads.Pop(); payload != nil; payload = s.payloads.Pop() {
+			for payload := s.payloads.Pop(); payload != nil; payload = s.payloads.Pop() { // 收集并处理所有待处理的payloads
 				// 解析payload中的原始区块数据
 				rawBlock := &common.Block{}
 				if err := pb.Unmarshal(payload.Data, rawBlock); err != nil {
@@ -746,42 +743,53 @@ func (s *GossipStateProviderImpl) hasRequiredHeight(height uint64) func(peer dis
 	}
 }
 
-// AddPayload adds new payload into state.
+// AddPayload 方法将新的payload（区块）添加到状态中。根据参数设置，该方法可能会阻塞直到区块被添加到payloads缓冲区中，或者在缓冲区满时丢弃区块。
 func (s *GossipStateProviderImpl) AddPayload(payload *proto.Payload) error {
 	return s.addPayload(payload, s.blockingMode)
 }
 
-// addPayload adds new payload into state. It may (or may not) block according to the
-// given parameter. If it gets a block while in blocking mode - it would wait until
-// the block is sent into the payloads buffer.
-// Else - it may drop the block, if the payload buffer is too full.
+// 方法将新的payload（区块）添加到状态中。根据参数设置，该方法可能会阻塞直到区块被添加到payloads缓冲区中，或者在缓冲区满时丢弃区块。
 func (s *GossipStateProviderImpl) addPayload(payload *proto.Payload, blockingMode bool) error {
+	// 检查传入的payload是否为空
 	if payload == nil {
-		return errors.New("Given payload is nil")
+		return errors.New("传入的payload为空")
 	}
-	s.logger.Debugf("[%s] Adding payload to local buffer, blockNum = [%d]", s.chainID, payload.SeqNum)
+	// 输出debug日志，记录正在向本地缓冲区添加payload的信息
+	s.logger.Debugf("[%s] 正在向本地缓冲区添加payload，区块编号 = [%d]", s.chainID, payload.SeqNum)
+	// 获取账本当前的高度
 	height, err := s.ledger.LedgerHeight()
 	if err != nil {
-		return errors.Wrap(err, "Failed obtaining ledger height")
+		// 如果获取账本高度失败，返回错误
+		return errors.Wrap(err, "未能获取账本高度")
 	}
 
+	// 根据blockingMode判断是否进入阻塞模式
 	if !blockingMode && payload.SeqNum-height >= uint64(s.config.StateBlockBufferSize) {
+		// 如果非阻塞模式下，且待添加区块与当前账本高度差超过配置的缓冲区大小
+		// 判断是否尝试通过straggler机制处理
 		if s.straggler(height, payload) {
-			s.logger.Warningf("[%s] Current block height (%d) is too far behind other peers at height (%d) to be able to receive blocks "+
-				"without state transfer which is disabled in the configuration "+
-				"(peer.gossip.state.enabled = false). Consider enabling it or setting the peer explicitly to be a leader (peer.gossip.orgLeader = true) "+
-				"in order to pull blocks directly from the ordering service.",
+			// 输出警告日志，提示当前节点与其它节点的高度差距过大，可能导致无法接收区块而无需状态传输
+			s.logger.Warningf("[%s] 当前区块高度 (%d) 与其它节点的高度 (%d) 差距过大，无法在未启用状态传输的情况下接收区块。\n"+
+				"请考虑在配置中启用状态传输 (peer.gossip.state.enabled = true)，\n"+
+				"或者将此节点显式设置为领导者 (peer.gossip.orgLeader = true)，\n"+
+				"以便直接从排序服务拉取区块。",
 				s.chainID, height, payload.SeqNum+1)
 		}
-		return errors.Errorf("Ledger height is at %d, cannot enqueue block with sequence of %d", height, payload.SeqNum)
+		// 返回错误，说明账本高度与待添加区块序列号不符
+		return errors.Errorf("账本高度为 %d，无法入队序列号为 %d 的区块", height, payload.SeqNum)
 	}
 
+	// 阻塞模式下，如果payloads缓冲区大小超过配置的两倍容量，进入等待状态
 	for blockingMode && s.payloads.Size() > s.config.StateBlockBufferSize*2 {
+		// 每隔enqueueRetryInterval时间间隔，检查payloads缓冲区状态
 		time.Sleep(enqueueRetryInterval)
 	}
 
+	// 将payload推送到payloads缓冲区中
 	s.payloads.Push(payload)
-	s.logger.Debugf("Blocks payloads buffer size for channel [%s] is %d blocks", s.chainID, s.payloads.Size())
+	// 输出debug日志，记录当前channels的payloads缓冲区大小
+	s.logger.Debugf("通道 [%s] 的块 payloads 缓冲区大小为 %d 个区块", s.chainID, s.payloads.Size())
+	// 成功添加payload，返回无错误
 	return nil
 }
 

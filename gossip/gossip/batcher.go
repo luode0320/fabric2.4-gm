@@ -30,7 +30,7 @@ type batchingEmitter interface {
 	Size() int
 }
 
-// newBatchingEmitter 接受以下参数：
+// 接受以下参数：
 // iterations: 每条消息被转发的次数
 // burstSize：由于消息计数而触发转发的阈值
 // Latency：每条消息在不被转发的情况下可以存储的最大延迟
@@ -90,8 +90,7 @@ func (p *batchingEmitterImpl) emit() {
 		msgs2beEmitted[i] = v.data
 	}
 
-	// 调用批量发送回调函数，将 msgs2beEmitted 作为参数传递给该函数，执行批量发送操作
-	p.cb(msgs2beEmitted)
+	p.cb(msgs2beEmitted) // 调用批量发送回调函数，将 msgs2beEmitted 作为参数传递给该函数，执行批量发送操作
 
 	// 减少计数器(发送的次数)
 	p.decrementCounters()
@@ -140,16 +139,26 @@ func (p *batchingEmitterImpl) Size() int {
 	return len(p.buff)
 }
 
+// Add 方法用于将消息添加到批量发射器的缓冲区中，当达到预设的爆发大小时，将批量发送消息。
 func (p *batchingEmitterImpl) Add(message interface{}) {
+	// 检查是否还有迭代次数，如果没有则直接返回，不执行任何操作
 	if p.iterations == 0 {
 		return
 	}
+
+	// 加锁以确保并发安全性
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	p.buff = append(p.buff, &batchedMessage{data: message, iterationsLeft: p.iterations})
+	// 将消息封装为 batchedMessage 类型，其中包含原始数据和剩余的迭代次数
+	p.buff = append(p.buff, &batchedMessage{
+		data:           message,      // 消息数据
+		iterationsLeft: p.iterations, // 剩余迭代次数，表示消息需要传播的次数
+	})
 
+	// 检查缓冲区中的消息数量是否达到了爆发大小
 	if len(p.buff) >= p.burstSize {
+		// 如果达到，则触发消息的批量发送
 		p.emit()
 	}
 }

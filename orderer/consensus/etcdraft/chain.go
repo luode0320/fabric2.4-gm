@@ -533,7 +533,7 @@ func (c *Chain) WaitReady() error {
 	}
 
 	select {
-	case c.submitC <- nil:
+	case c.submitC <- nil: // 提交一个空的提议, 作用时检测心跳
 	case <-c.doneC:
 		return errors.Errorf("链已停止")
 	}
@@ -698,7 +698,7 @@ func (c *Chain) Submit(req *orderer.SubmitRequest, sender uint64) error {
 
 	leadC := make(chan uint64, 1)
 	select {
-	case c.submitC <- &submit{req, leadC}:
+	case c.submitC <- &submit{req, leadC}: // 提交提议请求
 		lead := <-leadC
 		if lead == raft.None {
 			c.Metrics.ProposalFailures.Add(1)
@@ -799,10 +799,10 @@ func (c *Chain) run() {
 	}
 
 	// 初始化关键变量
-	// soft 用于记录Raft的软状态信息，如当前领导者等
+	// 记录上一次处理共识消息时保存的共识状态(领导者id + 节点状态)
 	var soft raft.SoftState
-	// submitC 是交易提交通道，用于接收待排序的交易
-	submitC := c.submitC
+
+	submitC := c.submitC // 赋值交易提交通道，用于接收待排序的交易
 
 	// 初始化区块创建器实例，用于构造新的区块
 	var bc *blockCreator
@@ -884,7 +884,7 @@ func (c *Chain) run() {
 		// 4. 停止之前启动的定时器，避免在跟随者状态下不必要的定时任务执行。
 		stopTimer()
 		// 5. 将交易提交通道submitC重置为默认的提交通道，跟随者直接通过此通道接收交易请求。
-		submitC = c.submitC
+		submitC = c.submitC // 转换为跟随着, 直接通过此通道接收交易请求。
 		// 6. 将区块创建器实例bc设置为nil，因为在跟随者状态下不需要创建新的区块。
 		bc = nil
 		// 7. 更新监控指标，将IsLeader指标设置为0，表明当前节点不再是领导者。
@@ -893,8 +893,7 @@ func (c *Chain) run() {
 
 	for {
 		select {
-		// 接受本地的raft消息, 此通道消息是由本地发送而来的, 本地必须是领导节点才会处理, 否则会跳过
-		case s := <-submitC:
+		case s := <-submitC: // 接受本地的raft消息, 此通道消息是由本地发送而来的, 本地必须是领导节点才会处理, 否则会跳过
 			// 检查是否有空消息，这可能是由`WaitReady`调用触发的轮询
 			if s == nil {
 				continue
@@ -902,12 +901,11 @@ func (c *Chain) run() {
 
 			// 如果当前Raft状态为预候选人或候选状态，说明尚未选举出领导者，通知请求者当前无领导者
 			if soft.RaftState == raft.StatePreCandidate || soft.RaftState == raft.StateCandidate {
-				s.leader <- raft.None
+				s.leader <- raft.None // 通知请求者当前无领导者
 				continue
 			}
 
-			// 通知请求者当前已知的领导者ID
-			s.leader <- soft.Lead
+			s.leader <- soft.Lead // 通知请求者当前节点缓存的的领导者ID
 			// 如果当前节点不是领导者，则跳过后续处理
 			if soft.Lead != c.raftID {
 				continue
@@ -944,7 +942,8 @@ func (c *Chain) run() {
 				submitC = nil
 			}
 
-		case app := <-c.applyC: // 接受来自其他节点的消息
+		case app := <-c.applyC: // 处理接受来自读取共识节点的消息
+			// app.soft: 用于存储 Raft 节点的软状态信息(节点id)
 			if app.soft != nil {
 				newLeader := atomic.LoadUint64(&app.soft.Lead) // 使用原子操作加载新领导者
 				if newLeader != soft.Lead {
@@ -994,11 +993,10 @@ func (c *Chain) run() {
 					}
 				}
 
-				soft = raft.SoftState{Lead: newLeader, RaftState: app.soft.RaftState}
+				soft = raft.SoftState{Lead: newLeader, RaftState: app.soft.RaftState} // 记录保存此次的共识状态(领导者id + 节点状态)
 
-				// 通知外部观察者
 				select {
-				case c.observeC <- soft:
+				case c.observeC <- soft: // 通知外部观察者
 				default:
 				}
 			}
@@ -1030,8 +1028,8 @@ func (c *Chain) run() {
 					number: c.lastBlock.Header.Number,                     // 设置新区块的起始区块编号
 					logger: c.logger,                                      // 设置日志记录器
 				}
-				// 允许提交通道用于接收新的交易请求
-				submitC = c.submitC
+
+				submitC = c.submitC // 选举为领导者,允许提交通道用于接收新的交易请求
 				// 标记领导者选举状态为已处理
 				c.justElected = false
 			} else if c.configInflight {
@@ -1040,12 +1038,10 @@ func (c *Chain) run() {
 				// 关闭提交通道，拒绝新的交易
 				submitC = nil
 			} else if c.blockInflight < c.opts.MaxInflightBlocks {
-				// 如果当前飞行中的区块数量小于最大允许数，开放提交通道以接受新交易
-				submitC = c.submitC
+				submitC = c.submitC // 如果当前飞行中的区块数量小于最大允许数，开放提交通道以接受新交易
 			}
 
-		// 等待定时器触发或超时
-		case <-timer.C():
+		case <-timer.C(): // 等待定时器触发或超时
 			ticking = false // 标记定时器已结束
 
 			// 调用BlockCutter来切分当前累积的消息批次
@@ -1062,8 +1058,7 @@ func (c *Chain) run() {
 			// 调用propose方法，将批次数据发送给Raft进行共识处理
 			c.propose(propC, bc, batch) // 将批次数据封装并发送至Raft处理管道
 
-		// 处理接收到的快照通知
-		case sn := <-c.snapC:
+		case sn := <-c.snapC: // 处理接收到的快照通知
 			// 检查快照索引是否非零，零索引的快照可能是用于触发追赶同步的特殊快照
 			if sn.Metadata.Index != 0 {
 				// 若快照索引小于等于已应用的索引，说明该快照已过时，无需处理
@@ -1080,15 +1075,14 @@ func (c *Chain) run() {
 				c.logger.Infof("收到用于触发追赶同步的人工快照")
 			}
 
-			// 尝试从接收到的快照进行追赶恢复
+			// 方法用于从给定的快照恢复，确保本地链状态与快照中描述的状态同步。
 			if err := c.catchUp(sn); err != nil {
 				// 如果从快照恢复失败，则记录严重错误并终止进程
 				c.logger.Panicf("从任期 %d 和索引 %d 处拍摄的快照恢复失败: %s",
 					sn.Metadata.Term, sn.Metadata.Index, err)
 			}
 
-		// 当接收到 doneC 信号，表示应该停止服务
-		case <-c.doneC:
+		case <-c.doneC: // 当接收到 doneC 信号，表示应该停止服务
 			// 停止计时器，防止资源泄露
 			stopTimer()
 			// 取消提议（Propose）操作，确保在退出前不再接受新的提议处理
@@ -1272,72 +1266,98 @@ func (c *Chain) propose(propC chan<- *common.Block, bc *blockCreator, batches ..
 	}
 }
 
+// 方法用于从给定的快照恢复，确保本地链状态与快照中描述的状态同步。
 func (c *Chain) catchUp(snap *raftpb.Snapshot) error {
+	// 将快照中的数据反序列化为Block结构
 	b, err := protoutil.UnmarshalBlock(snap.Data)
 	if err != nil {
-		return errors.Errorf("failed to unmarshal snapshot data to block: %s", err)
+		return errors.Errorf("反序列化快照数据为Block时失败: %s", err)
 	}
 
+	// 检查快照中的块高度是否小于或等于本地链的最后一个块的高度
 	if c.lastBlock.Header.Number >= b.Header.Number {
-		c.logger.Warnf("Snapshot is at block [%d], local block number is %d, no sync needed", b.Header.Number, c.lastBlock.Header.Number)
+		c.logger.Warnf("快照所在的块高度[%d]，本地块高度为%d，无需同步", b.Header.Number, c.lastBlock.Header.Number)
 		return nil
 	} else if b.Header.Number == c.lastBlock.Header.Number+1 {
-		c.logger.Infof("The only missing block [%d] is encapsulated in snapshot, committing it to shortcut catchup process", b.Header.Number)
+		// 如果快照块紧接在本地链的最后一个块之后，直接提交块以简化同步过程
+		c.logger.Infof("最后一个块[%d]被包含在快照中，提交它以快速完成同步", b.Header.Number)
 		c.commitBlock(b)
 		c.lastBlock = b
 		return nil
 	}
 
+	// 创建一个Block Puller用于从集群中拉取块
 	puller, err := c.createPuller()
 	if err != nil {
-		return errors.Errorf("failed to create block puller: %s", err)
+		return errors.Errorf("创建 Block Puller 块拉取器失败: %s", err)
 	}
 	defer puller.Close()
 
+	// 初始化下一块的高度
 	next := c.lastBlock.Header.Number + 1
 
-	c.logger.Infof("Catching up with snapshot taken at block [%d], starting from block [%d]", b.Header.Number, next)
+	// 日志记录同步过程的开始
+	c.logger.Infof("使用在块[%d]处拍摄的快照进行同步，从块[%d]开始同步快照数据", b.Header.Number, next)
 
+	// 循环拉取并提交从当前块高度到快照块高度之间的所有块
 	for next <= b.Header.Number {
+		// 从集群中拉取指定高度的块
 		block := puller.PullBlock(next)
 		if block == nil {
-			return errors.Errorf("failed to fetch block [%d] from cluster", next)
+			return errors.Errorf("从集群中获取块[%d]失败", next)
 		}
+		// 提交块至本地链
 		c.commitBlock(block)
+		// 更新本地链的最后一个块为刚提交的块
 		c.lastBlock = block
+		// 增加下一块的高度
 		next++
 	}
 
-	c.logger.Infof("Finished syncing with cluster up to and including block [%d]", b.Header.Number)
+	// 日志记录同步完成
+	c.logger.Infof("与集群同步完成，直至包含块[%d]", b.Header.Number)
 	return nil
 }
 
+// 方法用于处理并提交一个区块到链中，同时处理可能存在的共识者元数据更改。
 func (c *Chain) commitBlock(block *common.Block) {
-	// read consenters metadata to write into the replicated block
+	// 从区块中读取共识者元数据，用于写入到复制的区块中
 	blockMeta, err := protoutil.GetConsenterMetadataFromBlock(block)
 	if err != nil {
-		c.logger.Panicf("Failed to obtain metadata: %s", err)
+		// 如果获取元数据失败，日志记录并引发panic，因为这是一个严重错误
+		c.logger.Panicf("获取元数据失败: %s", err)
 	}
 
+	// 检查区块是否为配置区块
 	if !protoutil.IsConfigBlock(block) {
+		// 如果不是配置区块，直接将区块及其元数据写入到支持层
 		c.support.WriteBlock(block, blockMeta.Value)
 		return
 	}
 
+	// 如果是配置区块，将配置区块及其元数据写入到支持层
 	c.support.WriteConfigBlock(block, blockMeta.Value)
 
+	// 检测并处理配置变更，返回配置成员信息
 	configMembership := c.detectConfChange(block)
 
+	// 检查配置成员信息是否发生变化
 	if configMembership != nil && configMembership.Changed() {
-		c.logger.Infof("Config block [%d] changes consenter set, communication should be reconfigured", block.Header.Number)
+		// 如果配置变更，日志记录变更信息
+		c.logger.Infof("配置区块 [%d] 更改了共识者集，通信应该被重新配置", block.Header.Number)
 
+		// 加锁以确保元数据和共识者信息的安全更新
 		c.raftMetadataLock.Lock()
+		// 更新共识者元数据和共识者集合
 		c.opts.BlockMetadata = configMembership.NewBlockMetadata
 		c.opts.Consenters = configMembership.NewConsenters
+		// 解锁以释放资源
 		c.raftMetadataLock.Unlock()
 
+		// 重新配置通信
 		if err := c.configureComm(); err != nil {
-			c.logger.Panicf("Failed to configure communication: %s", err)
+			// 如果重新配置通信失败，日志记录并引发panic
+			c.logger.Panicf("重新配置通信失败: %s", err)
 		}
 	}
 }
@@ -1836,9 +1856,10 @@ func (c *Chain) newEvictionSuspector() *evictionSuspector {
 	}
 }
 
+// 触发追赶, 传递一个快照
 func (c *Chain) triggerCatchup(sn *raftpb.Snapshot) {
 	select {
-	case c.snapC <- sn:
+	case c.snapC <- sn: // 触发追赶, 手动传递一个快照
 	case <-c.doneC:
 	}
 }

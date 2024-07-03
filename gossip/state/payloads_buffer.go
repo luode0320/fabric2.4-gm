@@ -20,20 +20,20 @@ import (
 // sequence numbers. It also will provide the capability
 // to signal whenever expected block has arrived.
 type PayloadsBuffer interface {
-	// Adds new block into the buffer
+	// 将新块添加到缓冲区中
 	Push(payload *proto.Payload)
 
-	// Returns next expected sequence number
+	// 返回下一个预期的序列号
 	Next() uint64
 
-	// Remove and return payload with given sequence number
+	// 删除并返回具有给定序列号的有效负载
 	Pop() *proto.Payload
 
-	// Get current buffer size
+	// 获取当前缓冲区大小
 	Size() int
 
-	// Channel to indicate event when new payload pushed with sequence
-	// number equal to the next expected value.
+	// 使用序列推送新负载时指示事件的通道
+	// 数字等于下一个预期值。
 	Ready() chan struct{}
 
 	Close()

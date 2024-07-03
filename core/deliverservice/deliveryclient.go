@@ -157,6 +157,7 @@ func (d *deliverServiceImpl) StartDeliverForChannel(chainID string, ledgerInfo b
 
 	d.blockProviders[chainID] = dc
 	go func() {
+		// 用于从 orderer 服务中拉出块以在 peer 之间分发它们
 		dc.DeliverBlocks()
 		finalizer()
 	}()

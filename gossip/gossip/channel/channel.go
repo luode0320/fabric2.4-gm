@@ -85,7 +85,7 @@ type GossipChannel interface {
 	// HandleMessage processes a message sent by a remote peer
 	HandleMessage(protoext.ReceivedMessage)
 
-	// AddToMsgStore adds a given GossipMessage to the message store
+	// AddToMsgStore 将给定的GossipMessage添加到消息存储库
 	AddToMsgStore(msg *protoext.SignedGossipMessage)
 
 	// ConfigureChannel (re)configures the list of organizations
@@ -555,14 +555,14 @@ func (gc *gossipChannel) EligibleForChannel(member discovery.NetworkMember) bool
 	return msg != nil
 }
 
-// AddToMsgStore adds a given GossipMessage to the message store
+// AddToMsgStore 将给定的GossipMessage添加到消息存储库
 func (gc *gossipChannel) AddToMsgStore(msg *protoext.SignedGossipMessage) {
 	if protoext.IsDataMsg(msg.GossipMessage) {
 		gc.Lock()
 		defer gc.Unlock()
 		added := gc.blockMsgStore.Add(msg)
 		if added {
-			gc.logger.Debugf("Adding %v to the block puller", msg)
+			gc.logger.Debugf("将 %v 添加到拉块器", msg)
 			gc.blocksPuller.Add(msg)
 		}
 	}

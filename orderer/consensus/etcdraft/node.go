@@ -126,10 +126,9 @@ func (n *node) run(campaign bool) {
 	halfElectionTimeout := electionTimeout / 2
 	// 创建一个 Raft 时钟
 	raftTicker := n.clock.NewTicker(n.tickInterval)
-	// 如果存储中存在快照
+	// Snapshot: 返回存储在 内存中 的最新快照, 如果存储中存在快照
 	if s := n.storage.Snapshot(); !raft.IsEmptySnap(s) {
-		// 将快照发送到 n.chain.snapC 通道
-		n.chain.snapC <- &s
+		n.chain.snapC <- &s // 程序启动时将最新的一个 内存中 的快照发送到 n.chain.snapC 通道
 	}
 
 	// 创建一个无缓冲的通道，用于通知选举结果
@@ -176,7 +175,7 @@ func (n *node) run(campaign bool) {
 			// Ready返回返回当前时间点状态的通道
 			// 当从 `n.Ready()` 通道接收到数据时执行以下操作：
 
-			// 记录开始存储的时间
+			// 记录开始存储的时间: 作用是检测持久化共识快照是否太慢
 			startStoring := n.clock.Now()
 
 			// 如果存储失败，则记录错误并终止程序
@@ -196,8 +195,7 @@ func (n *node) run(campaign bool) {
 			}
 
 			if !raft.IsEmptySnap(rd.Snapshot) {
-				// 如果快照不为空，则将其发送到 n.chain.snapC 通道
-				n.chain.snapC <- &rd.Snapshot
+				n.chain.snapC <- &rd.Snapshot // 读取共识的快照不为空，则将其发送到 n.chain.snapC 通道
 			}
 
 			// 加载 leaderChangeSubscription 领导者更改订阅
@@ -213,8 +211,7 @@ func (n *node) run(campaign bool) {
 
 			// 跳过空的应用
 			if len(rd.CommittedEntries) != 0 || rd.SoftState != nil {
-				// 将应用的数据发送到 n.chain.applyC 通道, 已提交的条目 + 当前节点的状态
-				n.chain.applyC <- apply{rd.CommittedEntries, rd.SoftState}
+				n.chain.applyC <- apply{rd.CommittedEntries, rd.SoftState} // 读取raft共识消息, 已提交的条目 + 当前节点的状态
 			}
 
 			// 当前节点是否正在进行选举, SoftState = 当前节点的状态
@@ -249,6 +246,8 @@ func (n *node) run(campaign bool) {
 	}
 }
 
+// 将 Ready() 中的消息发送给其他节点。如果本节点是leader节点, 就会发送给其他所有跟随着
+// 如果本节点是跟随着, 就会发送给leader节点
 func (n *node) send(msgs []raftpb.Message) {
 	n.unreachableLock.RLock()         // 加读锁
 	defer n.unreachableLock.RUnlock() // 解读锁
@@ -261,7 +260,8 @@ func (n *node) send(msgs []raftpb.Message) {
 		status := raft.SnapshotFinish
 		bytes, _ := msg.Marshal() // 序列化消息
 
-		// 发送共识消息到目标节点
+		//n.logger.Infof("测试发送 %v -> %v", msg.From, msg.To, msg.Index)
+		// 发送共识消息到目标节点, 如果本节点是leader节点, 就会发送给其他所有跟随着, 如果本节点是跟随着, 就会发送给leader节点
 		err := n.rpc.SendConsensus(msg.To, &orderer.ConsensusRequest{Channel: n.chainID, Payload: bytes})
 		if err != nil {
 			n.ReportUnreachable(msg.To)   // 报告目标节点不可达

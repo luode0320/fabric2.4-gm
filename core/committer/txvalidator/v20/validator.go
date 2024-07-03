@@ -157,44 +157,35 @@ func (v *TxValidator) chainExists(chain string) bool {
 	return true
 }
 
-// Validate performs the validation of a block. The validation
-// of each transaction in the block is performed in parallel.
-// The approach is as follows: the committer thread starts the
-// tx validation function in a goroutine (using a semaphore to cap
-// the number of concurrent validating goroutines). The committer
-// thread then reads results of validation (in orderer of completion
-// of the goroutines) from the results channel. The goroutines
-// perform the validation of the txs in the block and enqueue the
-// validation result in the results channel. A few note-worthy facts:
-//  1. to keep the approach simple, the committer thread enqueues
-//     all transactions in the block and then moves on to reading the
-//     results.
-//  2. for parallel validation to work, it is important that the
-//     validation function does not change the state of the system.
-//     Otherwise the order in which validation is perform matters
-//     and we have to resort to sequential validation (or some locking).
-//     This is currently true, because the only function that affects
-//     state is when a config transaction is received, but they are
-//     guaranteed to be alone in the block. If/when this assumption
-//     is violated, this code must be changed.
+// Validate 方法执行区块的验证工作。每个区块中的交易将并行地进行验证。
+// 验证流程如下：提交者线程在协程中启动交易验证函数（使用信号量限制并发验证协程的数量）。
+// 提交者线程随后从结果通道读取验证结果（按照协程完成的顺序）。协程负责验证区块中的交易，
+// 并将验证结果推送到结果通道。值得注意的几点：
+//  1. 为了保持方法简单，提交者线程会将区块中的所有交易加入验证队列，然后再读取结果。
+//  2. 并行验证能够正常工作的重要前提是，验证函数不应改变系统的状态。
+//     否则，验证的顺序将变得重要，我们不得不退回到顺序验证（或使用某种锁定机制）。
+//     目前这一假设成立，因为唯一影响状态的功能是在接收到配置交易时，但这类交易在区块中是单独存在的。
+//     如果/当这一假设被打破，代码必须相应地调整。
 func (v *TxValidator) Validate(block *common.Block) error {
 	var err error
 	var errPos int
 
-	startValidation := time.Now() // timer to log Validate block duration
-	logger.Debugf("[%s] START Block Validation for block [%d]", v.ChannelID, block.Header.Number)
+	startValidation := time.Now() // 记录验证区块开始的时间点
+	logger.Debugf("[%s] 开始验证区块 [%d]", v.ChannelID, block.Header.Number)
 
-	// Initialize trans as valid here, then set invalidation reason code upon invalidation below
+	// 初始化交易标记为有效，在下面的验证过程中如果交易无效将设置其无效原因代码
 	txsfltr := txflags.New(len(block.Data.Data))
-	// array of txids
+	// 创建一个交易ID数组
 	txidArray := make([]string, len(block.Data.Data))
 
+	// 创建结果通道，用于接收验证结果
 	results := make(chan *blockValidationResult)
 	go func() {
 		for tIdx, d := range block.Data.Data {
-			// ensure that we don't have too many concurrent validation workers
+			// 确保并发验证工作者不超过设定的限制
 			v.Semaphore.Acquire(context.Background())
 
+			// 在一个新的协程中验证交易
 			go func(index int, data []byte) {
 				defer v.Semaphore.Release()
 
@@ -207,59 +198,59 @@ func (v *TxValidator) Validate(block *common.Block) error {
 		}
 	}()
 
-	logger.Debugf("expecting %d block validation responses", len(block.Data.Data))
+	// 日志记录期待的验证响应数量
+	logger.Debugf("期待 %d 条块验证响应", len(block.Data.Data))
 
-	// now we read responses in the order in which they come back
+	// 以协程完成的顺序读取响应
 	for i := 0; i < len(block.Data.Data); i++ {
 		res := <-results
 
 		if res.err != nil {
-			// if there is an error, we buffer its value, wait for
-			// all workers to complete validation and then return
-			// the error from the first tx in this block that returned an error
-			logger.Debugf("got terminal error %s for idx %d", res.err, res.tIdx)
+			// 如果有错误，缓冲错误值，等待所有工作者完成验证，
+			// 然后返回第一个在区块中返回错误的交易产生的错误
+			logger.Debugf("对于索引 %d 的交易，收到终止错误 %s", res.tIdx, res.err)
 
 			if err == nil || res.tIdx < errPos {
 				err = res.err
 				errPos = res.tIdx
 			}
 		} else {
-			// if there was no error, we set the txsfltr and we set the
-			// txsChaincodeNames and txsUpgradedChaincodes maps
-			logger.Debugf("got result for idx %d, code %d", res.tIdx, res.validationCode)
+			// 如果没有错误，设置交易标记并更新交易链码名和升级链码映射
+			logger.Debugf("对于索引 %d 的交易，收到验证结果，代码 %d", res.tIdx, res.validationCode)
 
 			txsfltr.SetFlag(res.tIdx, res.validationCode)
 
 			if res.validationCode == peer.TxValidationCode_VALID {
+				// 将有效交易的交易ID存入数组
 				txidArray[res.tIdx] = res.txid
 			}
 		}
 	}
 
-	// if we're here, all workers have completed the validation.
-	// If there was an error we return the error from the first
-	// tx in this block that returned an error
+	// 当所有工作者完成验证后，如果存在错误，
+	// 返回区块中第一个返回错误的交易产生的错误
 	if err != nil {
 		return err
 	}
 
-	// we mark invalid any transaction that has a txid
-	// which is equal to that of a previous tx in this block
+	// 标记交易ID重复的交易为无效
 	markTXIdDuplicates(txidArray, txsfltr)
 
-	// make sure no transaction has skipped validation
+	// 确保所有交易都已完成验证
 	err = v.allValidated(txsfltr, block)
 	if err != nil {
 		return err
 	}
 
-	// Initialize metadata structure
+	// 初始化元数据结构
 	protoutil.InitBlockMetadata(block)
 
+	// 设置交易过滤器到元数据中
 	block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER] = txsfltr
 
+	// 计算验证耗时并日志记录
 	elapsedValidation := time.Since(startValidation) / time.Millisecond // duration in ms
-	logger.Infof("[%s] Validated block [%d] in %dms", v.ChannelID, block.Header.Number, elapsedValidation)
+	logger.Debugf("[%s] 验证区块 [%d] 耗时 %d ms", v.ChannelID, block.Header.Number, elapsedValidation)
 
 	return nil
 }
