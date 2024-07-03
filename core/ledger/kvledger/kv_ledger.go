@@ -676,44 +676,49 @@ func (l *kvLedger) NewHistoryQueryExecutor() (ledger.HistoryQueryExecutor, error
 	return nil, nil
 }
 
-// CommitLegacy commits the block and the corresponding pvt data in an atomic operation.
-// It synchronizes commit, snapshot generation and snapshot requests via events and commitProceed channels.
-// Before committing a block, it sends a commitStart event and waits for a message from commitProceed.
-// After the block is committed, it sends a commitDone event.
-// Refer to processEvents function to understand how the channels and events work together to handle synchronization.
+// CommitLegacy 方法在一个原子操作中提交区块及其对应的私有数据。
+// 它通过事件和 commitProceed 通道同步提交操作、快照生成和快照请求。
+// 在提交区块之前，它发送一个 commitStart 事件，并等待来自 commitProceed 通道的消息。
+// 区块提交后，它发送一个 commitDone 事件。
+// 参考 processEvents 函数了解通道和事件如何协同工作以处理同步。
 func (l *kvLedger) CommitLegacy(pvtdataAndBlock *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error {
+	// 获取区块编号
 	blockNumber := pvtdataAndBlock.Block.Header.Number
+
+	// 向事件通道发送 commitStart 事件, 保证原子性
 	l.snapshotMgr.events <- &event{commitStart, blockNumber}
+	// 等待 commitProceed 通道的消息
 	<-l.snapshotMgr.commitProceed
 
+	// 执行提交操作
 	if err := l.commit(pvtdataAndBlock, commitOpts); err != nil {
+		// 如果提交过程中发生错误，返回错误
 		return err
 	}
 
+	// 提交完成后，向事件通道发送 commitDone 事件
 	l.snapshotMgr.events <- &event{commitDone, blockNumber}
+	// 成功提交，返回 nil 表示无错误
 	return nil
 }
 
-// commit commits the block and the corresponding pvt data in an atomic operation.
+// commit 方法在一个原子操作中提交区块和相应的私有数据。
 func (l *kvLedger) commit(pvtdataAndBlock *ledger.BlockAndPvtData, commitOpts *ledger.CommitOptions) error {
 	var err error
 	block := pvtdataAndBlock.Block
 	blockNo := pvtdataAndBlock.Block.Header.Number
 
+	// 记录开始处理区块的时间点
 	startBlockProcessing := time.Now()
+	// 如果配置允许从账本中获取私有数据
 	if commitOpts.FetchPvtDataFromLedger {
-		// when we reach here, it means that the pvtdata store has the
-		// pvtdata associated with this block but the stateDB might not
-		// have it. During the commit of this block, no update would
-		// happen in the pvtdata store as it already has the required data.
+		// 当我们到达这里时，意味着私有数据存储已包含与该区块相关的私有数据，
+		// 但状态数据库可能还没有这些数据。在提交这个区块时，私有数据存储中不会有任何更新，
+		// 因为它已经包含了所需的全部数据。
 
-		// if there is any missing pvtData, reconciler will fetch them
-		// and update both the pvtdataStore and stateDB. Hence, we can
-		// fetch what is available in the pvtDataStore. If any or
-		// all of the pvtdata associated with the block got expired
-		// and no longer available in pvtdataStore, eventually these
-		// pvtdata would get expired in the stateDB as well (though it
-		// would miss the pvtData until then)
+		// 如果存在缺失的私有数据，reconciler 将会获取并更新私有数据存储和状态数据库。
+		// 因此，我们可以从私有数据存储中获取可用的数据。如果与区块关联的任何或全部私有数据
+		// 已过期且不再存在于私有数据存储中，最终这些私有数据也会在状态数据库中过期（尽管在此之前会缺失私有数据）。
 		txPvtData, err := l.pvtdataStore.GetPvtDataByBlockNum(blockNo, nil)
 		if err != nil {
 			return err
@@ -721,48 +726,63 @@ func (l *kvLedger) commit(pvtdataAndBlock *ledger.BlockAndPvtData, commitOpts *l
 		pvtdataAndBlock.PvtData = convertTxPvtDataArrayToMap(txPvtData)
 	}
 
-	logger.Debugf("[%s] Validating state for block [%d]", l.ledgerID, blockNo)
+	// 输出调试日志：验证区块的状态
+	logger.Debugf("[%s] 验证区块 [%d] 的状态", l.ledgerID, blockNo)
+	// 验证并准备区块，用于提交
 	txstatsInfo, updateBatchBytes, err := l.txmgr.ValidateAndPrepare(pvtdataAndBlock, true)
 	if err != nil {
 		return err
 	}
+	// 计算处理区块所花费的时间
 	elapsedBlockProcessing := time.Since(startBlockProcessing)
 
+	// 记录开始提交到区块存储和私有数据存储的时间点
 	startBlockstorageAndPvtdataCommit := time.Now()
-	logger.Debugf("[%s] Adding CommitHash to the block [%d]", l.ledgerID, blockNo)
-	// we need to ensure that only after a genesis block, commitHash is computed
-	// and added to the block. In other words, only after joining a new channel
-	// or peer reset, the commitHash would be added to the block
+	logger.Debugf("[%s] 将 CommitHash 添加到块 [%d]", l.ledgerID, blockNo)
+
+	// 添加提交哈希值到区块
+	// 确保只有在创世区块之后才计算并添加commitHash。
+	// 换句话说，在加入新通道或节点重置后，commitHash才会被添加到区块中。
 	if block.Header.Number == 1 || len(l.commitHash) != 0 {
 		l.addBlockCommitHash(pvtdataAndBlock.Block, updateBatchBytes)
 	}
 
-	logger.Debugf("[%s] Committing pvtdata and block [%d] to storage", l.ledgerID, blockNo)
+	// 输出调试日志：提交区块和私有数据至存储
+	logger.Infof("[%s] 向存储提交区块 [%d] 和私有数据", l.ledgerID, blockNo)
+	// 加锁以保证线程安全
 	l.blockAPIsRWLock.Lock()
 	defer l.blockAPIsRWLock.Unlock()
+	// 实际提交到区块存储和私有数据存储
 	if err = l.commitToPvtAndBlockStore(pvtdataAndBlock); err != nil {
 		return err
 	}
+	// 计算提交到区块存储和私有数据存储所花费的时间
 	elapsedBlockstorageAndPvtdataCommit := time.Since(startBlockstorageAndPvtdataCommit)
 
+	// 记录开始提交到状态数据库的时间点
 	startCommitState := time.Now()
-	logger.Debugf("[%s] Committing block [%d] transactions to state database", l.ledgerID, blockNo)
+	// 输出调试日志：提交区块事务至状态数据库
+	logger.Infof("[%s] 向状态数据库提交区块 [%d] 的事务", l.ledgerID, blockNo)
+	// 提交事务到状态数据库
 	if err = l.txmgr.Commit(); err != nil {
-		panic(errors.WithMessage(err, "error during commit to txmgr"))
+		panic(errors.WithMessage(err, "在提交事务到txmgr期间出错"))
 	}
+	// 计算提交到状态数据库所花费的时间
 	elapsedCommitState := time.Since(startCommitState)
 
-	// History database could be written in parallel with state and/or async as a future optimization,
-	// although it has not been a bottleneck...no need to clutter the log with elapsed duration.
+	// 历史数据库的写入可以并行于状态数据库和/或异步执行作为未来的优化，
+	// 虽然目前它不是一个瓶颈……无需在日志中记录耗时详情。
 	if l.historyDB != nil {
-		logger.Debugf("[%s] Committing block [%d] transactions to history database", l.ledgerID, blockNo)
+		// 输出调试日志：提交区块事务至历史数据库
+		logger.Infof("[%s] 向历史数据库提交区块 [%d] 的事务", l.ledgerID, blockNo)
+		// 提交事务到历史数据库
 		if err := l.historyDB.Commit(block); err != nil {
-			panic(errors.WithMessage(err, "Error during commit to history db"))
+			panic(errors.WithMessage(err, "在提交到历史数据库期间出错"))
 		}
 	}
 
-	logger.Infof("[%s] 已提交块 [%d] 的 %d 交易记录(s) in %dms (state_validation=%dms block_and_pvtdata_commit=%dms state_commit=%dms)"+
-		" commitHash=[%x]",
+	// 输出信息日志：完成区块提交
+	logger.Infof("通道[%s] 已提交区块 [%d] 的 %d 笔交易记录 耗时 %dms (状态验证=%dms; 区块和私有数据提交=%dms; 状态数据库提交=%dms), commitHash=[%x]",
 		l.ledgerID, block.Header.Number, len(block.Data.Data),
 		time.Since(startBlockProcessing)/time.Millisecond,
 		elapsedBlockProcessing/time.Millisecond,
@@ -771,6 +791,7 @@ func (l *kvLedger) commit(pvtdataAndBlock *ledger.BlockAndPvtData, commitOpts *l
 		l.commitHash,
 	)
 
+	// 更新区块统计信息
 	l.updateBlockStats(
 		elapsedBlockProcessing,
 		elapsedBlockstorageAndPvtdataCommit,
@@ -778,6 +799,7 @@ func (l *kvLedger) commit(pvtdataAndBlock *ledger.BlockAndPvtData, commitOpts *l
 		txstatsInfo,
 	)
 
+	// 发送区块提交通知
 	l.sendCommitNotification(blockNo, txstatsInfo)
 	return nil
 }
@@ -907,20 +929,21 @@ func (l *kvLedger) GetPvtDataByNum(blockNum uint64, filter ledger.PvtNsCollFilte
 	return pvtdata, nil
 }
 
-// DoesPvtDataInfoExist returns true when
-// (1) the ledger has pvtdata associated with the given block number (or)
-// (2) a few or all pvtdata associated with the given block number is missing but the
-//
-//	missing info is recorded in the ledger (or)
-//
-// (3) the block is committed but it does not contain even a single
-//
-//	transaction with pvtData.
+// DoesPvtDataInfoExist 方法用于检查给定区块号的私有数据信息是否已存在于分类账中。
+// 方法返回true的情况包括：
+// （1）分类账中已经有关联于给定区块号的私有数据；
+// （2）虽然部分或全部私有数据丢失，但丢失的信息已被记录在分类账中；
+// （3）区块已经被提交，但它不包含任何带有私有数据的交易。
 func (l *kvLedger) DoesPvtDataInfoExist(blockNum uint64) (bool, error) {
+	// 获取私有数据存储中最后提交的区块高度
 	pvtStoreHt, err := l.pvtdataStore.LastCommittedBlockHeight()
 	if err != nil {
+		// 如果获取最后提交的区块高度失败，直接返回错误
 		return false, err
 	}
+
+	// 判断给定的区块号加一是否小于等于私有数据存储中最后提交的区块高度
+	// 这里加一是因为区块号从零开始，而高度是从一开始
 	return blockNum+1 <= pvtStoreHt, nil
 }
 
