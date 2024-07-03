@@ -463,7 +463,7 @@ func (g *Node) validateMsg(msg protoext.ReceivedMessage) bool {
 	return true
 }
 
-// sendGossipBatch 将一批待发送的 Gossip 消息发送出去。
+// sendGossipBatch 收到排序节点共识打包后的区块, 使用 Gossip 批量消息发送出去。
 //
 // 输入参数：
 //   - a：待发送的 Gossip 消息列表。
@@ -480,36 +480,37 @@ func (g *Node) sendGossipBatch(a []interface{}) {
 	g.gossipBatch(msgs2Gossip)
 }
 
-// gossipBatch - This is the method that actually decides to which peers to gossip the message
-// batch we possess.
-// For efficiency, we first isolate all the messages that have the same routing policy
-// and send them together, and only after that move to the next group of messages.
-// i.e: we send all blocks of channel C to the same group of peers,
-// and send all StateInfo messages to the same group of peers, etc. etc.
-// When we send blocks, we send only to peers that advertised themselves in the channel.
-// When we send StateInfo messages, we send to peers in the channel.
-// When we send messages that are marked to be sent only within the org, we send all of these messages
-// to the same set of peers.
-// The rest of the messages that have no restrictions on their destinations can be sent
-// to any group of peers.
+// gossipBatch 方法用于决定向哪些对等节点传播当前拥有的消息批次。
+// 为了提高效率，我们首先将具有相同路由策略的所有消息隔离出来并一起发送，
+// 完成后再处理下一批消息。例如，我们将同一通道的所有区块消息发送给一组特定的节点，
+// 将所有状态信息(StateInfo)消息发送给另一组节点，以此类推。
+// 发送区块时，只发送给在通道中声明自己的节点；
+// 发送状态信息消息时，发送给通道中的节点；
+// 发送仅限组织内部的消息时，将所有这类消息发送给同一组节点。
+// 其他没有目的地限制的消息可以发送给任意一组节点。
 func (g *Node) gossipBatch(msgs []*emittedGossipMessage) {
 	if g.disc == nil {
-		g.logger.Error("Discovery has not been initialized yet, aborting!")
+		g.logger.Error("发现尚未初始化，正在中止!")
 		return
 	}
 
+	// 初始化不同类型的空消息列表
 	var blocks []*emittedGossipMessage
 	var stateInfoMsgs []*emittedGossipMessage
 	var orgMsgs []*emittedGossipMessage
 	var leadershipMsgs []*emittedGossipMessage
 
+	// 定义判断条件函数
 	isABlock := func(o interface{}) bool {
+		// 判断是否为区块消息
 		return protoext.IsDataMsg(o.(*emittedGossipMessage).GossipMessage)
 	}
 	isAStateInfoMsg := func(o interface{}) bool {
+		// 判断是否为状态信息消息
 		return protoext.IsStateInfoMsg(o.(*emittedGossipMessage).GossipMessage)
 	}
 	aliveMsgsWithNoEndpointAndInOurOrg := func(o interface{}) bool {
+		// 判断是否为没有端点且在我们组织中的存活消息
 		msg := o.(*emittedGossipMessage)
 		if !protoext.IsAliveMsg(msg.GossipMessage) {
 			return false
@@ -518,25 +519,28 @@ func (g *Node) gossipBatch(msgs []*emittedGossipMessage) {
 		return member.Endpoint == "" && g.IsInMyOrg(discovery.NetworkMember{PKIid: member.PkiId})
 	}
 	isOrgRestricted := func(o interface{}) bool {
+		// 判断是否为组织受限消息
 		return aliveMsgsWithNoEndpointAndInOurOrg(o) || protoext.IsOrgRestricted(o.(*emittedGossipMessage).GossipMessage)
 	}
 	isLeadershipMsg := func(o interface{}) bool {
+		// 判断是否为领导消息
 		return protoext.IsLeadershipMsg(o.(*emittedGossipMessage).GossipMessage)
 	}
 
-	// Gossip blocks
+	// 分类并发送区块消息
 	blocks, msgs = partitionMessages(isABlock, msgs)
 	g.gossipInChan(blocks, func(gc channel.GossipChannel) filter.RoutingFilter {
+		// 返回一个组合的路由过滤器，用于确定消息的路由
 		return filter.CombineRoutingFilters(gc.EligibleForChannel, gc.IsMemberInChan, g.IsInMyOrg)
 	})
 
-	// Gossip Leadership messages
+	// 分类并发送领导权消息
 	leadershipMsgs, msgs = partitionMessages(isLeadershipMsg, msgs)
 	g.gossipInChan(leadershipMsgs, func(gc channel.GossipChannel) filter.RoutingFilter {
 		return filter.CombineRoutingFilters(gc.EligibleForChannel, gc.IsMemberInChan, g.IsInMyOrg)
 	})
 
-	// Gossip StateInfo messages
+	// 分类并发送状态消息
 	stateInfoMsgs, msgs = partitionMessages(isAStateInfoMsg, msgs)
 	for _, stateInfMsg := range stateInfoMsgs {
 		peerSelector := g.IsInMyOrg
@@ -553,17 +557,17 @@ func (g *Node) gossipBatch(msgs []*emittedGossipMessage) {
 		g.comm.Send(stateInfMsg.SignedGossipMessage, peers2Send...)
 	}
 
-	// Gossip messages restricted to our org
+	// 分类并发送组织限制消息
 	orgMsgs, msgs = partitionMessages(isOrgRestricted, msgs)
 	peers2Send := filter.SelectPeers(g.conf.PropagatePeerNum, g.disc.GetMembership(), g.IsInMyOrg)
 	for _, msg := range orgMsgs {
 		g.comm.Send(msg.SignedGossipMessage, g.removeSelfLoop(msg, peers2Send)...)
 	}
 
-	// Finally, gossip the remaining messages
+	// 最终，传播剩余消息
 	for _, msg := range msgs {
 		if !protoext.IsAliveMsg(msg.GossipMessage) {
-			g.logger.Error("Unknown message type", msg)
+			g.logger.Error("未知消息类型", msg)
 			continue
 		}
 		selectByOriginOrg := g.peersByOriginOrgPolicy(discovery.NetworkMember{PKIid: msg.GetAliveMsg().Membership.PkiId})
@@ -598,18 +602,21 @@ func (g *Node) sendAndFilterSecrets(msg *protoext.SignedGossipMessage, peers ...
 	}
 }
 
-// gossipInChan gossips a given GossipMessage slice according to a channel's routing policy.
+// gossipInChan 根据通道的路由策略传播给定的GossipMessage切片。
 func (g *Node) gossipInChan(messages []*emittedGossipMessage, chanRoutingFactory channelRoutingFilterFactory) {
 	if len(messages) == 0 {
 		return
 	}
+	// 提取所有消息涉及的通道标识
 	totalChannels := extractChannels(messages)
+
+	// 循环处理每个通道
 	var channel common.ChannelID
 	var messagesOfChannel []*emittedGossipMessage
 	for len(totalChannels) > 0 {
-		// Take first channel
+		// 获取第一个通道
 		channel, totalChannels = totalChannels[0], totalChannels[1:]
-		// Extract all messages of that channel
+		// 提取属于当前通道的所有消息
 		grabMsgs := func(o interface{}) bool {
 			return bytes.Equal(o.(*emittedGossipMessage).Channel, channel)
 		}
@@ -617,24 +624,27 @@ func (g *Node) gossipInChan(messages []*emittedGossipMessage, chanRoutingFactory
 		if len(messagesOfChannel) == 0 {
 			continue
 		}
-		// Grab channel object for that channel
+		// 根据通道标识获取通道对象
 		gc := g.chanState.getGossipChannelByChainID(channel)
 		if gc == nil {
-			g.logger.Warning("Channel", channel, "wasn't found")
+			g.logger.Warning("未找到通道", channel)
 			continue
 		}
-		// Select the peers to send the messages to
-		// For leadership messages we will select all peers that pass routing factory - e.g. all peers in channel and org
+		// 获取当前网络中的所有成员信息
 		membership := g.disc.GetMembership()
+		// 选择要发送消息的目标对等节点
 		var peers2Send []*comm.RemotePeer
 		if protoext.IsLeadershipMsg(messagesOfChannel[0].GossipMessage) {
+			// 对于领导权消息，选择所有通过路由工厂筛选的对等节点（例如，通道内和组织内的所有对等节点）
 			peers2Send = filter.SelectPeers(len(membership), membership, chanRoutingFactory(gc))
 		} else {
+			// 对于其他消息，根据配置的传播对等节点数量选择目标节点
 			peers2Send = filter.SelectPeers(g.conf.PropagatePeerNum, membership, chanRoutingFactory(gc))
 		}
 
-		// Send the messages to the remote peers
+		// 向远程对等节点发送消息
 		for _, msg := range messagesOfChannel {
+			// 移除自身循环引用，避免向自己发送消息
 			filteredPeers := g.removeSelfLoop(msg, peers2Send)
 			g.comm.Send(msg.SignedGossipMessage, filteredPeers...)
 		}
@@ -700,49 +710,59 @@ func (g *Node) SendByCriteria(msg *protoext.SignedGossipMessage, criteria SendCr
 	return nil
 }
 
-// Gossip sends a message to other peers to the network
+// Gossip 方法用于向网络中的其他对等节点发送消息
 func (g *Node) Gossip(msg *pg.GossipMessage) {
-	// Educate developers to Gossip messages with the right tags.
-	// See IsTagLegal() for wanted behavior.
+	// 检查开发者是否使用了合法的标签来构建Gossip消息
+	// 详情请参考IsTagLegal()函数的行为规范
 	if err := protoext.IsTagLegal(msg); err != nil {
-		panic(errors.WithStack(err))
+		panic(errors.WithStack(err)) // 如果标签不合法，程序将panic抛出错误
 	}
 
+	// 将GossipMessage封装为SignedGossipMessage类型，以便后续签名
 	sMsg := &protoext.SignedGossipMessage{
 		GossipMessage: msg,
 	}
 
 	var err error
+	// 根据消息类型决定是否需要签名
 	if protoext.IsDataMsg(sMsg.GossipMessage) {
+		// 如果是数据消息，则无需签名，直接调用NoopSign方法
 		sMsg, err = protoext.NoopSign(sMsg.GossipMessage)
 	} else {
+		// 对于非数据消息，调用Sign方法进行签名
 		_, err = sMsg.Sign(func(msg []byte) ([]byte, error) {
-			return g.mcs.Sign(msg)
+			return g.mcs.Sign(msg) // 使用成员证书服务(Membership Certificate Service)进行签名
 		})
 	}
 
+	// 检查签名过程是否出错
 	if err != nil {
-		g.logger.Warningf("Failed signing message: %+v", errors.WithStack(err))
+		g.logger.Warningf("签名失败的消息: %+v", errors.WithStack(err))
 		return
 	}
 
+	// 判断消息是否属于特定通道
 	if protoext.IsChannelRestricted(msg) {
+		// 获取对应通道的GossipChannel实例
 		gc := g.chanState.getGossipChannelByChainID(msg.Channel)
 		if gc == nil {
-			g.logger.Warning("Failed obtaining gossipChannel of", msg.Channel, "aborting")
+			g.logger.Warning("获取的 Gossip 通道失败", msg.Channel, "aborting")
 			return
 		}
+		// 如果是数据消息，将其添加到消息存储中
 		if protoext.IsDataMsg(msg) {
 			gc.AddToMsgStore(sMsg)
 		}
 	}
 
+	// 如果配置的传播迭代次数为0，则直接返回，不再进行传播
 	if g.conf.PropagateIterations == 0 {
 		return
 	}
+	// 将已签名的消息添加到消息发射器中，准备进行网络传播
 	g.emitter.Add(&emittedGossipMessage{
 		SignedGossipMessage: sMsg,
-		filter: func(_ common.PKIidType) bool {
+		filter: func(_ common.PKIidType) bool { // 定义一个过滤函数，这里设置为总是返回true，意味着消息将被广播给所有对等节点
 			return true
 		},
 	})
@@ -1381,9 +1401,7 @@ func (g *Node) peersByOriginOrgPolicy(peer discovery.NetworkMember) filter.Routi
 	}
 }
 
-// partitionMessages receives a predicate and a slice of gossip messages
-// and returns a tuple of two slices: the messages that hold for the predicate
-// and the rest
+// partitionMessages 接收一个谓词和一个八卦消息切片，并返回一个由两个切片组成的元组: 用于谓词和其余部分的消息
 func partitionMessages(pred common.MessageAcceptor, a []*emittedGossipMessage) ([]*emittedGossipMessage, []*emittedGossipMessage) {
 	s1 := []*emittedGossipMessage{}
 	s2 := []*emittedGossipMessage{}
@@ -1397,8 +1415,7 @@ func partitionMessages(pred common.MessageAcceptor, a []*emittedGossipMessage) (
 	return s1, s2
 }
 
-// extractChannels returns a slice with all channels
-// of all given GossipMessages
+// extractChannels 返回包含所有给定GossipMessages的所有通道的切片
 func extractChannels(a []*emittedGossipMessage) []common.ChannelID {
 	channels := []common.ChannelID{}
 	for _, m := range a {

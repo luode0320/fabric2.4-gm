@@ -71,7 +71,7 @@ type gossipSvc interface {
 	// UpdateChaincodes 更新对等方发布给通道中其他对等方的链码
 	UpdateChaincodes(chaincode []*gproto.Chaincode, channelID common.ChannelID)
 
-	// Gossip sends a message to other peers to the network
+	// Gossip 方法用于向网络中的其他对等节点发送消息
 	Gossip(msg *gproto.GossipMessage)
 
 	// PeerFilter receives a SubChannelSelectionCriteria and returns a RoutingFilter that selects
@@ -491,10 +491,11 @@ func (g *GossipService) updateAnchors(configUpdate ConfigUpdate) {
 	g.JoinChan(jcm, common.ChannelID(configUpdate.ChannelID))
 }
 
-// AddPayload appends message payload to for given chain
+// AddPayload 方法将新的payload（区块）添加到状态中。根据参数设置，该方法可能会阻塞直到区块被添加到payloads缓冲区中，或者在缓冲区满时丢弃区块。 添加完成会被保存到账本
 func (g *GossipService) AddPayload(channelID string, payload *gproto.Payload) error {
 	g.lock.RLock()
 	defer g.lock.RUnlock()
+	// 方法将新的payload（区块）添加到状态中。根据参数设置，该方法可能会阻塞直到区块被添加到payloads缓冲区中，或者在缓冲区满时丢弃区块。
 	return g.chains[channelID].AddPayload(payload)
 }
 
