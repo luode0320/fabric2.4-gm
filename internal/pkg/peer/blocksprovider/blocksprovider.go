@@ -159,7 +159,7 @@ func (d *Deliverer) DeliverBlocks() {
 			return
 		}
 
-		// 连接到排序服务
+		// 方法用于建立与排序服务(服务端)的连接，并发送SeekInfo(握手)请求。
 		deliverClient, endpoint, cancel, err := d.connect(seekInfoEnv)
 		if err != nil {
 			d.Logger.Warningf("无法连接到 orderer 排序服务: %s", err) // 警告：无法连接到排序服务
@@ -167,8 +167,8 @@ func (d *Deliverer) DeliverBlocks() {
 			continue                                         // 继续下一次循环
 		}
 
-		connLogger := d.Logger.With("orderer-address", endpoint.Address)   // 日志添加排序服务地址字段
-		connLogger.Infow("从 orderer 排序服务中提取下一个块", "下一区块高度:", ledgerHeight) // 输出信息日志
+		connLogger := d.Logger.With("orderer-address", endpoint.Address)     // 日志添加排序服务地址字段
+		connLogger.Infow("准备从 orderer 排序服务中提取下一个块", "下一区块高度:", ledgerHeight) // 输出信息日志
 
 		recv := make(chan *orderer.DeliverResponse) // 创建接收通道
 		go func() {
@@ -286,35 +286,45 @@ func (d *Deliverer) Stop() {
 	}
 }
 
+// 方法用于建立与排序服务(服务端)的连接，并发送SeekInfo(握手)请求。
 func (d *Deliverer) connect(seekInfoEnv *common.Envelope) (orderer.AtomicBroadcast_DeliverClient, *orderers.Endpoint, func(), error) {
+	// 从Orderers中随机选择一个Endpoint
 	endpoint, err := d.Orderers.RandomEndpoint()
 	if err != nil {
-		return nil, nil, nil, errors.WithMessage(err, "无法获取 orderer 节点信息")
+		return nil, nil, nil, errors.WithMessage(err, "无法获取 orderer 排序节点信息")
 	}
 
+	// 使用Dialer建立与选定Endpoint的连接
 	conn, err := d.Dialer.Dial(endpoint.Address, endpoint.RootCerts)
 	if err != nil {
 		return nil, nil, nil, errors.WithMessagef(err, "无法连接节点 '%s'", endpoint.Address)
 	}
 
+	// 创建带取消功能的context
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
+	// 使用DeliverStreamer创建与连接的AtomicBroadcast_DeliverClient
 	deliverClient, err := d.DeliverStreamer.Deliver(ctx, conn)
 	if err != nil {
+		// 如果创建客户端失败，清理连接和context
 		conn.Close()
 		ctxCancel()
 		return nil, nil, nil, errors.WithMessagef(err, "无法创建连接客户端节点 “% s”", endpoint.Address)
 	}
 
+	// 发送SeekInfo请求
 	err = deliverClient.Send(seekInfoEnv)
 	if err != nil {
+		// 如果发送请求失败，关闭连接并取消context
 		deliverClient.CloseSend()
 		conn.Close()
 		ctxCancel()
 		return nil, nil, nil, errors.WithMessagef(err, "无法发送连接信息到握手节点 '%s'", endpoint.Address)
 	}
 
+	// 返回客户端、Endpoint、取消函数和无错误
 	return deliverClient, endpoint, func() {
+		// 清理函数：关闭连接、取消context和连接
 		deliverClient.CloseSend()
 		ctxCancel()
 		conn.Close()
