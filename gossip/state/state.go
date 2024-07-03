@@ -99,8 +99,7 @@ type MCSAdapter interface {
 
 // ledgerResources defines abilities that the ledger provides
 type ledgerResources interface {
-	// StoreBlock deliver new block with underlined private data
-	// returns missing transaction ids
+	// StoreBlock 方法负责将包含私有数据的区块存储到分类账中，涉及验证、私有数据检索与存储等关键步骤。
 	StoreBlock(block *common.Block, data util.PvtDataCollections) error
 
 	// StorePvtData used to persist private data into transient store
@@ -260,16 +259,16 @@ func NewGossipStateProvider(
 	logger.Debug("将 gossip 通道账本高度更新为: ", height)
 	services.UpdateLedgerHeight(height, common2.ChannelID(s.chainID))
 
-	// Listen for incoming communication
+	// 侦听传入通信
 	go s.receiveAndQueueGossipMessages(gossipChan)
 	go s.receiveAndDispatchDirectMessages(commChan)
-	// Deliver in order messages into the incoming channel
+	// 方法持续监听并处理新区块和私有数据，将它们提交到账本。
 	go s.deliverPayloads()
 	if s.config.StateEnabled {
-		// Execute anti entropy to fill missing gaps
+		// 执行反熵来填补缺失的空白
 		go s.antiEntropy()
 	}
-	// Taking care of state request messages
+	// 处理状态请求消息
 	go s.processStateRequests()
 
 	return s
@@ -537,45 +536,53 @@ func (s *GossipStateProviderImpl) Stop() {
 	})
 }
 
+// 方法持续监听并处理新区块和私有数据，将它们提交到账本。
 func (s *GossipStateProviderImpl) deliverPayloads() {
 	for {
 		select {
-		// Wait for notification that next seq has arrived
+		// 等待新区块（payloads）准备好的通知
 		case <-s.payloads.Ready():
-			s.logger.Debugf("[%s] Ready to transfer payloads (blocks) to the ledger, next block number is = [%d]", s.chainID, s.payloads.Next())
-			// Collect all subsequent payloads
+			s.logger.Debugf("[%s] 准备将payloads（区块）转移至账本，下一个区块编号为 [%d]", s.chainID, s.payloads.Next())
+			// 收集并处理所有待处理的payloads
 			for payload := s.payloads.Pop(); payload != nil; payload = s.payloads.Pop() {
+				// 解析payload中的原始区块数据
 				rawBlock := &common.Block{}
 				if err := pb.Unmarshal(payload.Data, rawBlock); err != nil {
-					s.logger.Errorf("Error getting block with seqNum = %d due to (%+v)...dropping block", payload.SeqNum, errors.WithStack(err))
+					s.logger.Errorf("获取序列号为 %d 的区块时发生错误 (%+v)...放弃该区块", payload.SeqNum, errors.WithStack(err))
 					continue
 				}
+				// 检查区块是否包含必要的header和data部分
 				if rawBlock.Data == nil || rawBlock.Header == nil {
-					s.logger.Errorf("Block with claimed sequence %d has no header (%v) or data (%v)",
+					s.logger.Errorf("声称序列号为 %d 的区块缺少header (%v) 或 data (%v)",
 						payload.SeqNum, rawBlock.Header, rawBlock.Data)
 					continue
 				}
-				s.logger.Debugf("[%s] Transferring block [%d] with %d transaction(s) to the ledger", s.chainID, payload.SeqNum, len(rawBlock.Data.Data))
+				// 输出调试信息：正在将区块转移至账本
+				s.logger.Debugf("[%s] 将包含 %d 笔交易的区块 [%d] 转移至账本", s.chainID, payload.SeqNum, len(rawBlock.Data.Data))
 
-				// Read all private data into slice
+				// 解析并收集所有的私有数据
 				var p util.PvtDataCollections
 				if payload.PrivateData != nil {
 					err := p.Unmarshal(payload.PrivateData)
 					if err != nil {
-						s.logger.Errorf("Wasn't able to unmarshal private data for block seqNum = %d due to (%+v)...dropping block", payload.SeqNum, errors.WithStack(err))
+						s.logger.Errorf("无法反序列化序列号为 %d 的区块的私有数据 (%+v)...放弃该区块", payload.SeqNum, errors.WithStack(err))
 						continue
 					}
 				}
+				// 提交区块和私有数据到账本
 				if err := s.commitBlock(rawBlock, p); err != nil {
+					// 特殊处理VSCC执行失败的情况
 					if executionErr, isExecutionErr := err.(*vsccErrors.VSCCExecutionFailureError); isExecutionErr {
-						s.logger.Errorf("Failed executing VSCC due to %v. Aborting chain processing", executionErr)
+						s.logger.Errorf("VSCC执行失败: %v. 中止链处理", executionErr)
 						return
 					}
-					s.logger.Panicf("Cannot commit block to the ledger due to %+v", errors.WithStack(err))
+					// 其他错误情况，直接panic
+					s.logger.Panicf("无法将区块提交到账本 (%+v)", errors.WithStack(err))
 				}
 			}
+		// 监听停止信号
 		case <-s.stopCh:
-			s.logger.Debug("State provider has been stopped, finishing to push new blocks.")
+			s.logger.Debug("状态提供者已被停止，完成推送新区块的工作。")
 			return
 		}
 	}
@@ -788,25 +795,32 @@ func (s *GossipStateProviderImpl) straggler(currHeight uint64, receivedPayload *
 	return stateDisabled && tooFarBehind && peerDependent
 }
 
+// 方法负责将包含私有数据的区块提交到账本中，涉及关键步骤如区块验证、私有数据的检索与存储。
 func (s *GossipStateProviderImpl) commitBlock(block *common.Block, pvtData util.PvtDataCollections) error {
+	// 记录开始提交区块的时间
 	t1 := time.Now()
 
-	// Commit block with available private transactions
+	// StoreBlock 方法负责将包含私有数据的区块存储到分类账中，涉及验证、私有数据检索与存储等关键步骤。
 	if err := s.ledger.StoreBlock(block, pvtData); err != nil {
-		s.logger.Errorf("Got error while committing(%+v)", errors.WithStack(err))
+		s.logger.Errorf("提交时出错(%+v)", errors.WithStack(err))
 		return err
 	}
 
+	// 计算区块提交所花费的时间
 	sinceT1 := time.Since(t1)
+	// 使用 Prometheus 监控指标记录区块提交的耗时
 	s.stateMetrics.CommitDuration.With("channel", s.chainID).Observe(sinceT1.Seconds())
 
-	// Update ledger height
+	// 更新账本高度，即最新的区块编号
 	s.mediator.UpdateLedgerHeight(block.Header.Number+1, common2.ChannelID(s.chainID))
-	s.logger.Debugf("[%s] Committed block [%d] with %d transaction(s)",
+	// 输出调试信息，确认区块已成功提交
+	s.logger.Debugf("[%s] 已提交区块 [%d]，包含 %d 笔交易",
 		s.chainID, block.Header.Number, len(block.Data.Data))
 
+	// 使用 Prometheus 监控指标更新账本的高度
 	s.stateMetrics.Height.With("channel", s.chainID).Set(float64(block.Header.Number + 1))
 
+	// 成功提交区块，返回无错误
 	return nil
 }
 
