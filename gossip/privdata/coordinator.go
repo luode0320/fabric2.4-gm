@@ -49,8 +49,7 @@ type Committer interface {
 // blocks arrival and in flight transient data, responsible
 // to complete missing parts of transient data for given block.
 type Coordinator interface {
-	// StoreBlock deliver new block with underlined private data
-	// returns missing transaction ids
+	// StoreBlock 方法负责将包含私有数据的区块存储到分类账中，涉及验证、私有数据检索与存储等关键步骤。
 	StoreBlock(block *common.Block, data util.PvtDataCollections) error
 
 	// StorePvtData used to persist private data into transient store
@@ -148,45 +147,59 @@ func NewCoordinator(mspID string, support Support, store *transientstore.Store, 
 	}
 }
 
-// StoreBlock stores block with private data into the ledger
+// StoreBlock 方法负责将包含私有数据的区块存储到分类账中，涉及验证、私有数据检索与存储等关键步骤。
 func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDataCollections) error {
+	// 验证区块数据是否存在
 	if block.Data == nil {
-		return errors.New("Block data is empty")
+		return errors.New("区块数据为空")
 	}
+	// 验证区块头是否存在
 	if block.Header == nil {
-		return errors.New("Block header is nil")
+		return errors.New("区块头为nil")
 	}
 
+	// 日志记录接收到的区块信息
 	c.logger.Infof("从缓冲区收到块 [%d]", block.Header.Number)
 
+	// 开始验证区块
 	c.logger.Debugf("正在验证块 [%d]", block.Header.Number)
 
+	// 标记验证开始时间
 	validationStart := time.Now()
+	// 执行区块验证
 	err := c.Validator.Validate(block)
+	// 记录验证耗时
 	c.reportValidationDuration(time.Since(validationStart))
 	if err != nil {
-		c.logger.Errorf("Validation failed: %+v", err)
+		// 如果验证失败，日志记录错误并返回
+		c.logger.Errorf("验证失败: %+v", err)
 		return err
 	}
 
+	// 创建区块与私有数据结构
 	blockAndPvtData := &ledger.BlockAndPvtData{
 		Block:          block,
 		PvtData:        make(ledger.TxPvtDataMap),
 		MissingPvtData: make(ledger.TxMissingPvtData),
 	}
 
+	// 检查私有数据信息是否已存在于分类账中
 	exist, err := c.DoesPvtDataInfoExistInLedger(block.Header.Number)
 	if err != nil {
 		return err
 	}
 	if exist {
+		// 如果私有数据已存在，使用特定选项提交区块
 		commitOpts := &ledger.CommitOptions{FetchPvtDataFromLedger: true}
 		return c.CommitLegacy(blockAndPvtData, commitOpts)
 	}
 
+	// 初始化度量指标
 	listMissingPrivateDataDurationHistogram := c.metrics.ListMissingPrivateDataDuration.With("channel", c.ChainID)
 	fetchDurationHistogram := c.metrics.FetchDuration.With("channel", c.ChainID)
 	purgeDurationHistogram := c.metrics.PurgeDuration.With("channel", c.ChainID)
+
+	// 创建私有数据提供者
 	pdp := &PvtdataProvider{
 		mspID:                                   c.mspID,
 		selfSignedData:                          c.selfSignedData,
@@ -205,32 +218,37 @@ func (c *coordinator) StoreBlock(block *common.Block, privateDataSets util.PvtDa
 		fetcher:                                 c.Fetcher,
 		idDeserializerFactory:                   c.idDeserializerFactory,
 	}
+	// 从区块中获取私有数据信息
 	pvtdataToRetrieve, err := c.getTxPvtdataInfoFromBlock(block)
 	if err != nil {
-		c.logger.Warningf("Failed to get private data info from block: %s", err)
+		c.logger.Warningf("从区块获取私有数据信息失败: %s", err)
 		return err
 	}
 
-	// Retrieve the private data.
-	// RetrievePvtdata checks this peer's eligibility and then retreives from cache, transient store, or from a remote peer.
+	// 检索私有数据
+	// RetrievePvtdata 方法首先检查此节点的资格，然后从缓存、临时存储或远程节点检索私有数据。
 	retrievedPvtdata, err := pdp.RetrievePvtdata(pvtdataToRetrieve)
 	if err != nil {
-		c.logger.Warningf("Failed to retrieve pvtdata: %s", err)
+		c.logger.Warningf("检索私有数据失败: %s", err)
 		return err
 	}
 
+	// 更新区块与私有数据结构中的私有数据
 	blockAndPvtData.PvtData = retrievedPvtdata.blockPvtdata.PvtData
 	blockAndPvtData.MissingPvtData = retrievedPvtdata.blockPvtdata.MissingPvtData
 
-	// commit block and private data
+	// 开始提交区块和私有数据
 	commitStart := time.Now()
+	// 执行提交操作
 	err = c.CommitLegacy(blockAndPvtData, &ledger.CommitOptions{})
+	// 记录提交耗时
 	c.reportCommitDuration(time.Since(commitStart))
 	if err != nil {
-		return errors.Wrap(err, "commit failed")
+		// 如果提交失败，日志记录错误并返回
+		return errors.Wrap(err, "提交失败")
 	}
 
-	// Purge transactions
+	// 异步清理事务
 	go retrievedPvtdata.Purge()
 
 	return nil
