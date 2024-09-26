@@ -227,6 +227,7 @@ func (sc *serverCreds) ServerHandshake(rawConn net.Conn) (net.Conn, credentials.
 		l := sc.logger.With("远程地址", server.RemoteAddr().String())
 
 		start := time.Now()
+		l.Infof("服务器TLS握手")
 		if err := server.Handshake(); err != nil {
 			l.Errorf("服务器TLS握手失败 %s 有错误 %s", time.Since(start), err)
 			return nil, nil, err
@@ -331,6 +332,7 @@ func (dtc *DynamicClientCredentials) ClientHandshake(ctx context.Context, author
 		// 创建 GMTLS TransportCredentials
 		creds := gmcredentials.NewTLS(config)
 		start := time.Now()
+		l.Infof("客户端TLS握手")
 		// 进行客户端TLS握手
 		conn, auth, err := creds.ClientHandshake(ctx, authority, rawConn)
 		if err != nil {
